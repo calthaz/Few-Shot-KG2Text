@@ -14,6 +14,8 @@ from torch.utils.data import Dataset, DataLoader
 
 
 def compute_kd_loss(node_embeddings, desc_embeddings, node_masks, kd_masks):
+    #print(node_embeddings.size())
+    #print(desc_embeddings.size())
     assert node_embeddings.size() == desc_embeddings.size()
     mse_loss = nn.MSELoss(reduction='none')
     loss = mse_loss(node_embeddings, desc_embeddings)
@@ -32,13 +34,17 @@ def compute_ce_loss(logits, labels, masks):
 
 
 def run_train_batch(config, batch, teacher, student, plm, reconstructor, copyer,
-                    plm_optimizer, external_optimizer, device):
+                    plm_optimizer, external_optimizer, scaler, device):
+    #print(batch)
     nodes, edges, types, node_masks, kd_description, kd_description_masks, kd_positions, \
         recon_relations, recon_positions, recon_masks, gen_outputs, gen_masks, pointer, pointer_masks = batch
 
     kd_description = kd_description.to(device)
+    #kd_description = kd_description.half()
     kd_description_masks = kd_description_masks.to(device)
-    output_dict = teacher(input_ids=kd_description,
+    #kd_description_masks = kd_description_masks.half()
+    with torch.cuda.amp.autocast():
+        output_dict = teacher(input_ids=kd_description,
                           attention_mask=kd_description_masks,
                           output_hidden_states=True,
                           return_dict=True)
@@ -47,15 +53,22 @@ def run_train_batch(config, batch, teacher, student, plm, reconstructor, copyer,
     teacher_embeddings = teacher_embeddings.detach()
 
     nodes = nodes.to(device)
-    student_embeddings = student(nodes, edges, types)
+    #nodes = nodes.half()
+    with torch.cuda.amp.autocast():
+        student_embeddings = student(nodes, edges, types)
 
     node_masks = node_masks.to(device)
+    #node_masks = node_masks.half()
     kd_masks = torch.ne(kd_positions, 0).to(device)
+    #kd_masks = kd_masks.half()
     kd_loss = compute_kd_loss(student_embeddings, teacher_embeddings, node_masks, kd_masks)
 
     gen_outputs = gen_outputs.to(device)
+    #gen_outputs = gen_outputs.half()
     gen_masks = gen_masks.to(device)
-    output_dict = plm(input_ids=None,
+    #gen_masks = gen_masks.half()
+    with torch.cuda.amp.autocast():
+        output_dict = plm(input_ids=None,
                       inputs_embeds=teacher_embeddings,
                       attention_mask=node_masks,
                       decoder_input_ids=gen_outputs[:, :-1],
@@ -68,21 +81,30 @@ def run_train_batch(config, batch, teacher, student, plm, reconstructor, copyer,
     decoder_input_embeddings = plm.get_input_embeddings()(gen_outputs[:, :-1])
     decoder_output_hiddens = output_dict["decoder_hidden_states"][-1]
     pointer = pointer.to(device)
+    #pointer = pointer.half()
     pointer_masks = pointer_masks.to(device)
-    copy_prob = copyer(decoder_input_embeddings, decoder_output_hiddens, pointer[:, 1:])
+    #pointer_masks = pointer_masks.half()
+    with torch.cuda.amp.autocast():
+        copy_prob = copyer(decoder_input_embeddings, decoder_output_hiddens, pointer[:, 1:])
     copy_loss = copy_prob.masked_select(pointer_masks[:, 1:]).mean()
 
     recon_positions = recon_positions.to(device)
+    #recon_positions = recon_positions.half()
     recon_relations = recon_relations.to(device)
+    #recon_relations = recon_relations.half()
     recon_masks = recon_masks.to(device)
-    rec_logits = reconstructor(recon_positions, output_dict["encoder_hidden_states"][-1])
+    #recon_masks = recon_masks.half()
+    with torch.cuda.amp.autocast():
+        rec_logits = reconstructor(recon_positions, output_dict["encoder_hidden_states"][-1])
     rec_loss = compute_ce_loss(rec_logits, recon_relations, recon_masks)
 
     loss = gen_loss + rec_loss * config["rec_weight"] + kd_loss * config["kd_weight"] + copy_loss * config["cp_weight"]
+    
 
     plm_optimizer.zero_grad()
     external_optimizer.zero_grad()
-    loss.backward()
+    #loss.backward()
+    scaler.scale(loss).backward()
     external_optimizer.step()
     plm_optimizer.step()
 
@@ -157,24 +179,29 @@ def train(config):
     for para in teacher.parameters():
         para.requires_grad = False
     teacher.to(device)
+    #teacher.half()
 
     logger.info("Build Student Model.")
     student = GraphEncoder(vocabs["node"].size(), vocabs["relation"].size(),
                            config["gnn_layers"], config["embedding_size"], config["node_embedding"])
     student.to(device)
+    #student.half()
 
     logger.info("Build PLM Model.")
     bart_tokenizer = BartTokenizer.from_pretrained(config["plm_dir"])
     plm = BartForConditionalGeneration.from_pretrained(config["plm_dir"])
     plm.to(device)
+    #plm.half()
 
     logger.info("Build Reconstructor Model.")
     reconstructor = GraphReconstructor(vocabs["relation"].size(), config["hidden_size"])
     reconstructor.to(device)
+    #reconstructor.half()
 
     logger.info("Build Copy Model.")
     copyer = GraphPointer(config["embedding_size"], config["hidden_size"])
     copyer.to(device)
+    #copyer.half()
 
     plm_parameters = [p for p in plm.parameters() if p.requires_grad]
     plm_optimizer = build_optimizer(plm_parameters, config["plm_learner"], config["plm_lr"], config)
@@ -220,18 +247,23 @@ def train(config):
     copy_losses = []
     rec_losses = []
     best_gen_loss = None
+    #new
+    scaler = torch.cuda.amp.GradScaler()
+
     for epoch_idx in range(config["start_epoch"], config["epochs"]):
-        teacher.train()
-        student.train()
-        plm.train()
-        reconstructor.train()
-        copyer.train()
+        with torch.cuda.amp.autocast():
+            teacher.train()
+            student.train()
+            plm.train()
+            reconstructor.train()
+            copyer.train()
         train_gen_loss = 0
         t0 = time.time()
         for batch_idx, batch in enumerate(train_dataloader):
-
+            #new
+            
             gen_loss, rec_loss, kd_loss, copy_loss = run_train_batch(config, batch, teacher, student, plm, reconstructor,
-                                                                     copyer, plm_optimizer, external_optimizer, device)
+                                                                     copyer, plm_optimizer, external_optimizer, scaler, device)
 
             logger.info("Epoch {} batch {}: KD loss {}, Gen loss {} Rec loss {} Copy loss {}.".format(epoch_idx,
                                                                                                       batch_idx,

@@ -3,8 +3,8 @@ import pickle
 import numpy as np
 from transformers import BartForConditionalGeneration, BartTokenizer
 
-model = BartForConditionalGeneration.from_pretrained('../../pretrained_model/bart-large')
-tokenizer = BartTokenizer.from_pretrained('../../pretrained_model/bart-large')
+model = BartForConditionalGeneration.from_pretrained('facebook/bart-base')
+tokenizer = BartTokenizer.from_pretrained('facebook/bart-base')#../../pretrained_model/bart-large
 embedding = model.get_input_embeddings().weight
 
 vocab = pickle.load(open("node.pkl", "rb"))
@@ -18,6 +18,3 @@ for token, idx in vocab.items():
 
 my_embedding = torch.stack(my_embedding, dim=0).detach().numpy()
 np.save("node_embeddings.npy", my_embedding)
-
-
-

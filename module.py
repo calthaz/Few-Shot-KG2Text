@@ -60,12 +60,15 @@ class GraphEncoder(nn.Module):
 
         self.node_embedding = nn.Embedding(num_nodes, embedding_size)
         self.node_embedding.from_pretrained(torch.from_numpy(np.load(initilized_embedding)), freeze=False)
+        #self.node_embedding = self.node_embedding.half()
 
         self.dropout = nn.Dropout(dropout_ratio)
 
         self.gnn = []
         for layer in range(gnn_layers):
-            self.gnn.append(RGCNConv(embedding_size, embedding_size))  # if rgcn is too slow, you can use gcn
+            gcn = GCNConv(embedding_size, embedding_size)
+            #gcn = gcn.half()
+            self.gnn.append(gcn)  # if rgcn is too slow, you can use gcn #R
         self.gnn = ListModule(*self.gnn)
 
     def forward(self, nodes, edges, types):
@@ -81,8 +84,11 @@ class GraphEncoder(nn.Module):
         node_embeddings = []
         for bid in range(batch_size):
             embed = self.node_embedding(nodes[bid, :])
+            #embed.float()
             edge_index = torch.as_tensor(edges[bid], dtype=torch.long, device=device)
+            #edge_index = edge_index.half()
             edge_type = torch.as_tensor(types[bid], dtype=torch.long, device=device)
+            #edge_type = edge_type.half()
             for lidx, rgcn in enumerate(self.gnn):
                 if lidx == len(self.gnn) - 1:
                     embed = rgcn(embed, edge_index=edge_index)

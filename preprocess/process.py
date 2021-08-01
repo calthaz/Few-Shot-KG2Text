@@ -1,6 +1,7 @@
 import json
 import re
 import unidecode
+import codecs
 import random
 import spacy
 from transformers import RobertaTokenizer, BartTokenizer, BertTokenizer
@@ -8,7 +9,7 @@ from transformers import RobertaTokenizer, BartTokenizer, BertTokenizer
 
 class NLP:
     def __init__(self):
-        self.nlp = spacy.load('../../../en_core_web_sm-2.3.1', disable=['ner', 'parser', 'tagger'])
+        self.nlp = spacy.load('en_core_web_sm', disable=['ner', 'parser', 'tagger'])
         self.nlp.add_pipe(self.nlp.create_pipe('sentencizer'))
 
     def sent_tokenize(self, text):
@@ -99,20 +100,22 @@ def DFS(graph, s):
         node_seq.append(vertex)
     return node_seq
 
+print(get_nodes("I am happy"))
 
-bert_tokenizer = BartTokenizer.from_pretrained('../../pretrained_model/bart-large')
-bart_tokenizer = BartTokenizer.from_pretrained('../../pretrained_model/bart-large')
+bert_tokenizer = BartTokenizer.from_pretrained('facebook/bart-base')
+bart_tokenizer = BartTokenizer.from_pretrained('facebook/bart-base')
 # print(tokenizer.decoder_start_token_id)
 # exit(0)
 
-filename = ['train.json', 'valid.json', 'test.json']
+filename = ['webnlg/train.json', 'webnlg/valid.json', 'webnlg/test.json']
 
 for fn in filename:
     fin = open(fn, "r")
     data = json.load(fin)
+    print (len(data))
     fin.close()
 
-    fout = open(fn[:-5] + "_processed.json", "w")
+    fout = codecs.open(fn[:-5] + "_processed.json", "w", "utf-8")
     for d in data:
         new_dict = dict()
 
@@ -121,11 +124,12 @@ for fn in filename:
         ner_dict = {}
         ren_dict = {}
         for k, v in d['ner2ent'].items():
-            en = get_nodes(v)
-            if en == "":
-                valid = False
-            ner_dict[k] = en
-            ren_dict[en] = k
+           en = get_nodes(v)
+
+           if en == "":
+               valid = False
+           ner_dict[k] = en
+           ren_dict[en] = k
         new_dict['ner2ent'] = ner_dict
         new_dict['ent2ner'] = ren_dict
         # -------WebNLG dataset------
@@ -145,6 +149,9 @@ for fn in filename:
         #     ren_dict[en] = ner + "_" + str(idx)
         # new_dict['ner2ent'] = ner_dict
         # new_dict['ent2ner'] = ren_dict
+
+        # print(new_dict)
+        # exit()
         # -------WebNLG dataset------
 
         # -------Genwiki dataset------
@@ -201,6 +208,9 @@ for fn in filename:
 
         new_dict['plm_output'] = bart_tokenizer.tokenize(new_dict['target_txt'])
 
+        #print(new_dict['plm_output'])
+        #exit()
+        
         test_output = []
         pointer = []
         idx = 0
@@ -395,5 +405,6 @@ for fn in filename:
 
         assert len(new_dict['split_nodes']) == len(new_dict['positions'])
 
+        #print(len(new_dict['split_nodes']))
         fout.write(json.dumps(new_dict, ensure_ascii=False) + "\n")
     fout.close()

@@ -1,0 +1,9 @@
+*.json
+*.txt
+*.npy
+*.pkl
+*.bin
+*.tar
+
+ckpt/
+logging/

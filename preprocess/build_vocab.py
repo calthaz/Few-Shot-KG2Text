@@ -45,7 +45,7 @@ import json
 entities = set()
 relations = set()
 
-filename = ['train_processed.json', 'valid_processed.json', 'test_processed.json']
+filename = ['webnlg/train_processed.json', 'webnlg/valid_processed.json', 'webnlg/test_processed.json']
 
 for fn in filename:
     fin = open(fn, "r")
@@ -78,4 +78,5 @@ for idx, rel in enumerate(relations):
 
 pickle.dump(en2idx, open("node.pkl", "wb"))
 pickle.dump(rel2idx, open("relation.pkl", "wb"))
+print(len(rel2idx))
 
