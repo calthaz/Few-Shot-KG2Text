@@ -4,12 +4,18 @@ import unidecode
 import codecs
 import random
 import spacy
-from transformers import RobertaTokenizer, BartTokenizer, BertTokenizer
-
+#from transformers import RobertaTokenizer, BartTokenizer, BertTokenizer
+#from transformers import AutoTokenizer, AutoModelForMaskedLM
+from transformers import BertTokenizer
+bert_tokenizer = BertTokenizer.from_pretrained("uer/t5-small-chinese-cluecorpussmall")
+bert_tokenizer.bos_token="<s>"
+bert_tokenizer.eos_token="</s>"
+bert_tokenizer.mask_token="[MASK]"
+#model = AutoModelForMaskedLM.from_pretrained("bert-base-chinese")x
 
 class NLP:
     def __init__(self):
-        self.nlp = spacy.load('en_core_web_sm', disable=['ner', 'parser', 'tagger'])
+        self.nlp = spacy.load('zh_core_web_sm', disable=['ner', 'parser', 'tagger'])
         self.nlp.add_pipe(self.nlp.create_pipe('sentencizer'))
 
     def sent_tokenize(self, text):
@@ -20,10 +26,11 @@ class NLP:
     def word_tokenize(self, text, lower=False):  # create a tokenizer function
         if text is None:
             return text
-        text = ' '.join(text.split())
-        if lower:
-            text = text.lower()
+        #text = ' '.join(text.split())
+        #if lower:
+        #    text = text
         toks = [tok.text for tok in self.nlp.tokenizer(text)]
+        #print(toks)
         return ' '.join(toks)
 
 
@@ -44,7 +51,7 @@ def camel_case_split(identifier):
 
 
 def get_nodes(n):
-    n = unidecode.unidecode(n.strip().lower())
+    #n = unidecode.unidecode(n.strip())#.lower()
     n = n.replace('-', ' ')
     n = n.replace('_', ' ')
     n = nlp.word_tokenize(n)
@@ -100,19 +107,21 @@ def DFS(graph, s):
         node_seq.append(vertex)
     return node_seq
 
-print(get_nodes("I am happy"))
+print(get_nodes("我很快乐"))
 
-bert_tokenizer = BartTokenizer.from_pretrained('facebook/bart-base')
-bart_tokenizer = BartTokenizer.from_pretrained('facebook/bart-base')
+#bert_tokenizer = BartTokenizer.from_pretrained('facebook/bart-base')
+#bart_tokenizer = BartTokenizer.from_pretrained('facebook/bart-base')
 # print(tokenizer.decoder_start_token_id)
 # exit(0)
 
-filename = ['webnlg/train.json', 'webnlg/valid.json', 'webnlg/test.json']
+filename = ['../Chinese_preprocess/preprocessed/train.json', 
+            '../Chinese_preprocess/preprocessed/valid.json', 
+            '../Chinese_preprocess/preprocessed/test.json']
 
 for fn in filename:
-    fin = open(fn, "r")
+    fin = codecs.open(fn, "r", "utf-8")
     data = json.load(fin)
-    print (len(data))
+    print ("INFO data set length", fn, len(data))
     fin.close()
 
     fout = codecs.open(fn[:-5] + "_processed.json", "w", "utf-8")
@@ -124,7 +133,7 @@ for fn in filename:
         ner_dict = {}
         ren_dict = {}
         for k, v in d['ner2ent'].items():
-           en = get_nodes(v)
+           en = v #get_nodes(v)
 
            if en == "":
                valid = False
@@ -175,68 +184,94 @@ for fn in filename:
         temp = []
         serialization = []
         for tri in d['triples']:
-            h = get_nodes(tri[0])
-            t = get_nodes(tri[2])
-            r = camel_case_split(get_relation(tri[1]))
+            h =  tri ['ent1']#get_nodes(tri[0])
+            t =  tri ['ent2']#get_nodes(tri[2])
+            r =  tri ['rel']#camel_case_split(get_relation(tri[1]))
             new_t = [h, r, t]
             temp.append(new_t)
             serialization.extend(["<Head>", h, "<Relation>", r, "<Tail>", t])
         new_dict['triples'] = temp
         new_dict['triples_serialization'] = serialization
 
-        tokens = []
-        for token in d['target'].split():
-            if token.isupper() and '_' in token:
-                tokens.append(token)
-            else:
-                tokens.append(token.lower())
-        new_dict['target'] = get_text(' '.join(tokens), lower=False)
+        #tokens = []
+        #for token in d['target'].split():
+        #    if token.isupper() and '_' in token:
+        #        tokens.append(token)
+        #    else:
+        #        tokens.append(token.lower())
+        new_dict['target'] = d['target'] #get_text(' '.join(tokens), lower=False)
 
+        #print("before checking nodes exists in ner2ent")
+        reg_str = r'ENTITY_[0-9]+'
+        list_of_masks = re.findall(reg_str, new_dict['target'])
+        #print(list_of_masks)
+        
         try:
             tokens = []
             nodes = []
-            for token in new_dict['target'].split():
-                if token.isupper():
-                    tokens.append(new_dict['ner2ent'][token])
-                    if new_dict['ner2ent'][token] not in nodes:
-                        nodes.append(new_dict['ner2ent'][token])
-                else:
-                    tokens.append(token)
-            new_dict['target_txt'] = (' '.join(tokens)).lower()
+
+            pointer = 0
+            while pointer < len(new_dict['target']):
+                found = False
+                for index, mask in enumerate(list_of_masks):
+                    if (new_dict['target'][pointer:pointer+len(mask)] == mask):
+                        tokens.append(new_dict['ner2ent'][mask])
+                        if new_dict['ner2ent'][mask] not in nodes:
+                            nodes.append(new_dict['ner2ent'][mask])
+                        pointer += len(mask)
+                        found = True
+                        break
+                if not found:
+                    tokens.append(new_dict['target'][pointer])
+                    pointer += 1 
+            new_dict['target_txt'] = (''.join(tokens))
         except KeyError:
             continue
 
-        new_dict['plm_output'] = bart_tokenizer.tokenize(new_dict['target_txt'])
-
+        new_dict['plm_output'] = bert_tokenizer.tokenize(new_dict['target_txt'])
+        
+        #print(new_dict['target_txt'])
         #print(new_dict['plm_output'])
         #exit()
         
         test_output = []
         pointer = []
-        idx = 0
-        for tok in new_dict['target'].split():
-            if idx == 0:
-                if tok.isupper():
-                    ent = bart_tokenizer.tokenize(new_dict['ner2ent'][tok])
+        #------------------
+        text_pointer = 0
+        plm_pointer = 0
+        while plm_pointer < len(new_dict['plm_output']):
+            found = False
+            for index, mask in enumerate(list_of_masks):
+                if (new_dict['target'][text_pointer:text_pointer+len(mask)] == mask):
+                    ent = new_dict['ner2ent'][mask]
+                    ent = bert_tokenizer.tokenize(ent)
                     test_output.extend(ent)
+                    plm_pointer += len(ent)
+                    text_pointer += len(mask)
                     pointer.extend([1] * len(ent))
-                else:
-                    word = bart_tokenizer.tokenize(tok)
-                    test_output.extend(word)
-                    pointer.extend([0] * len(word))
-            else:
-                if tok.isupper():
-                    ent = bart_tokenizer.tokenize(" " + new_dict['ner2ent'][tok])
-                    test_output.extend(ent)
-                    pointer.extend([1] * len(ent))
-                else:
-                    word = bart_tokenizer.tokenize(" " + tok)
-                    test_output.extend(word)
-                    pointer.extend([0] * len(word))
-            idx += 1
+                    found = True
+                    break
+            if not found:
+                test_output.extend(new_dict['plm_output'][plm_pointer])
+                text_pointer += len(new_dict['plm_output'][plm_pointer])
+                plm_pointer += 1
+                pointer.extend([0])
+        #-------------------
+        #print(test_output)
+        #print(new_dict['plm_output'])
+        if not (len(pointer) == len(new_dict['plm_output'])):
+            print("ERROR: The length of pointer and output are not equal!")
+            print("test", test_output)
+            print("plm", new_dict['plm_output'])
+            exit()
+            
+        #assert test_output == new_dict['plm_output'],  "The test output and plm output are not equal!"
+        if not (test_output == new_dict['plm_output']):
+            print("WARNING: The test output and plm output are not equal!")
+            print("test", test_output)
+            print("plm", new_dict['plm_output'])
+            # exit()
 
-        assert len(pointer) == len(new_dict['plm_output']), "The length of pointer and output are not equal!"
-        assert test_output == new_dict['plm_output'], "The test output and plm output are not equal!"
 
         new_dict['pointer'] = pointer
 
@@ -269,9 +304,9 @@ for fn in filename:
             edges[0].append(hid)
             edges[1].append(tid)
             types.append(t[1])
-            edges[1].append(hid)
-            edges[0].append(tid)
-            types.append(t[1])
+            #edges[1].append(hid)
+            #edges[0].append(tid)
+            #types.append(t[1]+"<-1>") #TODO should not have symmetry?? 
         new_dict['edges'] = edges
         new_dict['types'] = types
 
@@ -348,9 +383,9 @@ for fn in filename:
                     split_edges[0].append(split2start[hidx] + i)
                     split_edges[1].append(split2start[tidx] + j)
                     split_types.append(r)
-                    split_edges[1].append(split2start[hidx] + i)
-                    split_edges[0].append(split2start[tidx] + j)
-                    split_types.append(r)
+                    #split_edges[1].append(split2start[hidx] + i)
+                    #split_edges[0].append(split2start[tidx] + j)
+                    #split_types.append(r+"<-1>") #TODO should not have symmetry?? 
         new_dict['split_edges'] = split_edges
         new_dict['split_types'] = split_types
         new_dict['pairs'] = pairs
@@ -364,34 +399,43 @@ for fn in filename:
         used_ner = set()
         new_target_tokens = []
         order = 1
-        for idx, token in enumerate(target_tokens):
-            if token.isupper():
-                if token not in used_ner:
-                    new_target_tokens.append('<mask>')
-                    ent = new_dict['ner2ent'][token]
-                    used_ner.add(token)
-                    order2ent[order] = ent
-                    order += 1
-                else:
-                    ent = new_dict['ner2ent'][token]
-                    new_target_tokens.append(ent)
-            else:
-                new_target_tokens.append(token)
-
-        target_tokens = ["<s>"] + bert_tokenizer.tokenize(' '.join(new_target_tokens)) + ["</s>"]
+        #--------------------
+        text_pointer = 0
+        while text_pointer < len(new_dict['target']):
+            found = False
+            for index, mask in enumerate(list_of_masks):
+                if (new_dict['target'][text_pointer:text_pointer+len(mask)] == mask):
+                    if mask not in used_ner:
+                        new_target_tokens.append('[MASK]')
+                        ent = new_dict['ner2ent'][mask]
+                        used_ner.add(mask)
+                        order2ent[order] = ent
+                        order += 1
+                    else:
+                        ent = new_dict['ner2ent'][mask]
+                        new_target_tokens.append(ent)
+                    text_pointer += len(mask)
+                    found = True
+                    break
+            if not found:
+                new_target_tokens.append(new_dict['target'][text_pointer])
+                text_pointer += 1
+        #-------------------------------
+        target_tokens = ["<s>"] + bert_tokenizer.tokenize(''.join(new_target_tokens)) + ["</s>"]
+        #print("target_tokens", target_tokens)
 
         positions = [[0] * len(bert_tokenizer.tokenize(ent)) for ent in new_dict['nodes']]
         masked_target_tokens = []
         new_target_tokens = []
         order = 1
         for idx, token in enumerate(target_tokens):
-            if token == '<mask>':
+            if token == '[MASK]':
                 ent = order2ent[order]
                 ent_len = len(bert_tokenizer.tokenize(ent))
                 start = len(masked_target_tokens)
                 ent_idx = new_dict['nodes'].index(ent)
                 positions[ent_idx] = list(range(start, start + ent_len))
-                masked_target_tokens.extend(['<mask>'] * ent_len)
+                masked_target_tokens.extend(['[MASK]'] * ent_len)
                 new_target_tokens.extend(bert_tokenizer.tokenize(ent))
                 order += 1
             else:
@@ -407,4 +451,5 @@ for fn in filename:
 
         #print(len(new_dict['split_nodes']))
         fout.write(json.dumps(new_dict, ensure_ascii=False) + "\n")
+        
     fout.close()

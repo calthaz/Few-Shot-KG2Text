@@ -66,7 +66,7 @@ class GraphEncoder(nn.Module):
 
         self.gnn = []
         for layer in range(gnn_layers):
-            gcn = GCNConv(embedding_size, embedding_size)
+            gcn = RGCNConv(embedding_size, embedding_size, num_relations)
             #gcn = gcn.half()
             self.gnn.append(gcn)  # if rgcn is too slow, you can use gcn #R
         self.gnn = ListModule(*self.gnn)
@@ -79,6 +79,7 @@ class GraphEncoder(nn.Module):
         """
         batch_size = nodes.size(0)
         device = nodes.device
+        #print("module graphencoder forward", types)
 
         # (batch_size, num_nodes, output_size)
         node_embeddings = []
@@ -91,9 +92,9 @@ class GraphEncoder(nn.Module):
             #edge_type = edge_type.half()
             for lidx, rgcn in enumerate(self.gnn):
                 if lidx == len(self.gnn) - 1:
-                    embed = rgcn(embed, edge_index=edge_index)
+                    embed = rgcn(embed, edge_index=edge_index, edge_type=edge_type)
                 else:
-                    embed = self.dropout(F.relu(rgcn(embed, edge_index=edge_index)))
+                    embed = self.dropout(F.relu(rgcn(embed, edge_index=edge_index, edge_type=edge_type)))
             node_embeddings.append(embed)
         node_embeddings = torch.stack(node_embeddings, 0)  # [batch_size, num_node, embedding_size]
 

@@ -132,6 +132,7 @@ def collate_fn_graph_text(batch):
         nodes.append(b[0])
         edges.append(b[1])
         types.append(b[2])
+        #print("utils.py", b[2])
         outputs.append(b[3])
         pointer.append(b[4])
         pairs.append(b[5])

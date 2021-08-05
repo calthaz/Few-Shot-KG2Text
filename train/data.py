@@ -31,7 +31,7 @@ class Vocab(object):
 
 class NLP:
     def __init__(self):
-        self.nlp = spacy.load('../../en_core_web_sm-2.3.1', disable=['ner', 'parser', 'tagger'])
+        self.nlp = spacy.load('zh_core_web_sm', disable=['ner', 'parser', 'tagger'])
         self.nlp.add_pipe(self.nlp.create_pipe('sentencizer'))
 
     def sent_tokenize(self, text):

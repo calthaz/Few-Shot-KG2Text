@@ -9,7 +9,9 @@ from data import Vocab, NLP, S2SDataset
 from utils import build_optimizer, init_seed, init_logger, init_device, read_configuration, collate_fn_graph_text, \
     format_time
 from module import GraphEncoder, GraphReconstructor, GraphPointer
-from transformers import BartTokenizer, BartForConditionalGeneration, BertModel, BertTokenizer
+#from transformers import BartTokenizer, BartForConditionalGeneration, BertModel, BertTokenizer
+#from transformers import AutoTokenizer, AutoModelForMaskedLM, BertLMHeadModel
+from transformers import BertTokenizer, T5EncoderModel, T5ForConditionalGeneration, Text2TextGenerationPipeline
 from torch.utils.data import Dataset, DataLoader
 
 
@@ -36,6 +38,11 @@ def compute_ce_loss(logits, labels, masks):
 def run_train_batch(config, batch, teacher, student, plm, reconstructor, copyer,
                     plm_optimizer, external_optimizer, scaler, device):
     #print(batch)
+    # S2SDataset: data = {"nodes": input_nodes, "edges": input_edges, "types": input_types, "outputs": output_ids,
+    # "pointer": pointer, "pairs": input_pairs, "relations": relations, "positions": positions,
+    # "descriptions": descriptions}
+    # utils: return nodes, edges, types, node_masks, descriptions, description_masks, positions, relations, pairs, pair_masks, \
+    #       outputs, output_masks, pointer, pointer_masks
     nodes, edges, types, node_masks, kd_description, kd_description_masks, kd_positions, \
         recon_relations, recon_positions, recon_masks, gen_outputs, gen_masks, pointer, pointer_masks = batch
 
@@ -48,8 +55,12 @@ def run_train_batch(config, batch, teacher, student, plm, reconstructor, copyer,
                           attention_mask=kd_description_masks,
                           output_hidden_states=True,
                           return_dict=True)
-    positions = kd_positions.unsqueeze(-1).expand(-1, -1, output_dict["encoder_last_hidden_state"].size(-1)).to(device)
-    teacher_embeddings = torch.gather(output_dict["encoder_last_hidden_state"], dim=1, index=positions)
+
+    encoder_last_hidden_state = output_dict["hidden_states"][-1] #TODO I assume this is the last encoder state??
+    positions = kd_positions.unsqueeze(-1).expand(-1, -1, encoder_last_hidden_state.size(-1)).to(device)
+    #Hidden-states of the model at the output of each layer plus the initial embedding outputs
+    
+    teacher_embeddings = torch.gather(encoder_last_hidden_state, dim=1, index=positions)
     teacher_embeddings = teacher_embeddings.detach()
 
     nodes = nodes.to(device)
@@ -71,8 +82,10 @@ def run_train_batch(config, batch, teacher, student, plm, reconstructor, copyer,
         output_dict = plm(input_ids=None,
                       inputs_embeds=teacher_embeddings,
                       attention_mask=node_masks,
+                      
                       decoder_input_ids=gen_outputs[:, :-1],
                       decoder_attention_mask=gen_masks[:, :-1],
+                      
                       output_hidden_states=True,
                       labels=gen_outputs[:, 1:].contiguous(),
                       return_dict=True)
@@ -174,7 +187,8 @@ def train(config):
     vocabs["relation"] = Vocab(config["relation_vocab"])
 
     logger.info("Build Teacher Model.")
-    teacher = BartForConditionalGeneration.from_pretrained(config["teacher_dir"])
+    #teacher = BartForConditionalGeneration.from_pretrained(config["teacher_dir"])
+    teacher = T5EncoderModel.from_pretrained(config["teacher_dir"])
     teacher.requires_grad = False
     for para in teacher.parameters():
         para.requires_grad = False
@@ -188,8 +202,13 @@ def train(config):
     #student.half()
 
     logger.info("Build PLM Model.")
-    bart_tokenizer = BartTokenizer.from_pretrained(config["plm_dir"])
-    plm = BartForConditionalGeneration.from_pretrained(config["plm_dir"])
+    #bart_tokenizer = BartTokenizer.from_pretrained(config["plm_dir"])
+    bert_tokenizer = BertTokenizer.from_pretrained(config["plm_dir"])
+    bert_tokenizer.bos_token="<s>"
+    bert_tokenizer.eos_token="</s>"
+    bert_tokenizer.mask_token="[MASK]"
+    #plm = BartForConditionalGeneration.from_pretrained(config["plm_dir"])
+    plm = T5ForConditionalGeneration.from_pretrained(config["plm_dir"])
     plm.to(device)
     #plm.half()
 
@@ -221,7 +240,7 @@ def train(config):
     logger.info("Create training dataset.")
     train_dataloader = DataLoader(
         S2SDataset(data_dir=config["data_dir"], dataset=config["dataset"],
-                   tokenizer=bart_tokenizer, node_vocab=vocabs["node"], relation_vocab=vocabs["relation"],
+                   tokenizer=bert_tokenizer, node_vocab=vocabs["node"], relation_vocab=vocabs["relation"],
                    num_samples=config["num_samples"], usage="train"),
         batch_size=config["train_batch_size"],
         shuffle=True,
@@ -233,7 +252,7 @@ def train(config):
     logger.info("Create validation dataset.")
     valid_dataloader = DataLoader(
         S2SDataset(data_dir=config["data_dir"], dataset=config["dataset"],
-                   tokenizer=bart_tokenizer, node_vocab=vocabs["node"], relation_vocab=vocabs["relation"],
+                   tokenizer=bert_tokenizer, node_vocab=vocabs["node"], relation_vocab=vocabs["relation"],
                    num_samples="all", usage="valid"),
         batch_size=config["eval_batch_size"],
         shuffle=False,
@@ -309,14 +328,14 @@ def train(config):
 
         if best_gen_loss is None or valid_gen_loss <= best_gen_loss:
             output_dir = '{}-{}-{}'.format(config["dataset"], config["num_samples"], str(epoch_idx))
-            saved_path = os.path.join("./ckpt", output_dir)
+            saved_path = os.path.join("../ckpt", output_dir)
             if not os.path.exists(saved_path):
                 os.makedirs(saved_path)
 
             # save pretrained language model
             model_to_save = plm.module if hasattr(plm, 'module') else plm
             model_to_save.save_pretrained(saved_path)
-            bart_tokenizer.save_pretrained(saved_path)
+            bert_tokenizer.save_pretrained(saved_path)
 
             # save knowledge adapter
             torch.save(config, os.path.join(saved_path, 'training_configurations.bin'))

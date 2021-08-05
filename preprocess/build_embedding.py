@@ -1,10 +1,14 @@
 import torch
 import pickle
 import numpy as np
-from transformers import BartForConditionalGeneration, BartTokenizer
+#from transformers import AutoTokenizer, AutoModelForMaskedLM
 
-model = BartForConditionalGeneration.from_pretrained('facebook/bart-base')
-tokenizer = BartTokenizer.from_pretrained('facebook/bart-base')#../../pretrained_model/bart-large
+from transformers import BertTokenizer, T5ForConditionalGeneration
+tokenizer = BertTokenizer.from_pretrained("uer/t5-small-chinese-cluecorpussmall")
+
+#model = AutoModelForMaskedLM.from_pretrained('bert-base-chinese')
+model = T5ForConditionalGeneration.from_pretrained("uer/t5-small-chinese-cluecorpussmall")
+#tokenizer = AutoTokenizer.from_pretrained('bert-base-chinese')#../../pretrained_model/bart-large
 embedding = model.get_input_embeddings().weight
 
 vocab = pickle.load(open("node.pkl", "rb"))

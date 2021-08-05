@@ -45,7 +45,9 @@ import json
 entities = set()
 relations = set()
 
-filename = ['webnlg/train_processed.json', 'webnlg/valid_processed.json', 'webnlg/test_processed.json']
+filename = ['../Chinese_preprocess/preprocessed/train_processed.json', 
+'../Chinese_preprocess/preprocessed/valid_processed.json', 
+'../Chinese_preprocess/preprocessed/test_processed.json']
 
 for fn in filename:
     fin = open(fn, "r")
