@@ -7,6 +7,7 @@ dataset: preprocessed
 num_samples: all  # 500
 reproducibility: True
 mode: train
+use_amp: True
 
 # dataset
 data_dir: '../Chinese_preprocess' #'../data'
@@ -14,10 +15,25 @@ node_vocab: '../preprocess/node.pkl'
 relation_vocab: '../preprocess/relation.pkl'
 node_embedding: '../preprocess/node_embeddings.npy'
 
+# dataset on colab
+colab_data_dir: "/content/drive/MyDrive/Colab Notebooks/ChineseKG2Text/Chinese_preprocess" #'../data'
+colab_node_vocab: '/content/drive/MyDrive/Colab Notebooks/ChineseKG2Text/preprocess/node.pkl'
+colab_relation_vocab: '/content/drive/MyDrive/Colab Notebooks/ChineseKG2Text/preprocess/relation.pkl'
+colab_node_embedding: '/content/drive/MyDrive/Colab Notebooks/ChineseKG2Text/preprocess/node_embeddings.npy'
+
+#dataset in image
+#docker_data_dir: "./Chinese_preprocess" #'../data'
+#docker_node_vocab: './preprocess/node.pkl'
+#docker_relation_vocab: './preprocess/relation.pkl'
+#docker_node_embedding: './preprocess/node_embeddings.npy'
+
 # model
 teacher_dir: "uer/t5-small-chinese-cluecorpussmall" #"bert-base-chinese" #"hfl/chinese-xlnet-base" #
 plm_dir: "uer/t5-small-chinese-cluecorpussmall" #"bert-base-chinese" #"hfl/chinese-xlnet-base" #
-log_dir: '../logging'
+log_dir: './logging'
+model_save_path: './models/'
+colab_model_save_path: '/content/drive/MyDrive/Colab Notebooks/ChineseKG2Text/models/'
+vertex_model_save_path: 'gs://chinesekg2text-bucket/models/'
 
 # training settings
 start_epoch: 0
@@ -38,8 +54,8 @@ hidden_size: 512
 eval_batch_size: 20
 
 # testing settings
-external_model: '../ckpt/webnlg-all-399/external.bin'
-fine_tuned_plm_dir: '../ckpt/webnlg-all-399'
+external_model: '../preprocessed-all-18/external.bin'
+fine_tuned_plm_dir: '../preprocessed-all-18'
 test_batch_size: 20
 max_seq_length: 100
-output_dir: '../ckpt/webnlg-all-399'
+output_dir: '../preprocessed-all-18'

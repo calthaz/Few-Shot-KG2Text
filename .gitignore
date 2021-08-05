@@ -1,9 +1,15 @@
+__pycache__
 *.json
 *.txt
 *.npy
 *.pkl
 *.bin
 *.tar
+*.res
+*.tar.gz
+*.zip
 
 ckpt/
 logging/
+ChineseKG2TextTrainer.egg-info/
+dist/

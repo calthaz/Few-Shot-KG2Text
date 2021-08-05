@@ -1,3 +1,5 @@
+BUCKET = "gs://chinesekg2text-bucket"
+
 import os
 import torch
 import time
@@ -13,6 +15,7 @@ from module import GraphEncoder, GraphReconstructor, GraphPointer
 #from transformers import AutoTokenizer, AutoModelForMaskedLM, BertLMHeadModel
 from transformers import BertTokenizer, T5EncoderModel, T5ForConditionalGeneration, Text2TextGenerationPipeline
 from torch.utils.data import Dataset, DataLoader
+from transformers import LogitsProcessorList, MinLengthLogitsProcessor, BeamSearchScorer
 
 
 def compute_kd_loss(node_embeddings, desc_embeddings, node_masks, kd_masks):
@@ -45,12 +48,31 @@ def run_train_batch(config, batch, teacher, student, plm, reconstructor, copyer,
     #       outputs, output_masks, pointer, pointer_masks
     nodes, edges, types, node_masks, kd_description, kd_description_masks, kd_positions, \
         recon_relations, recon_positions, recon_masks, gen_outputs, gen_masks, pointer, pointer_masks = batch
+    #------------------try to solve nan?
+    #print(nodes)
+    assert not torch.any(torch.isnan(nodes))
+    flat_edges = [item for sublist in edges for pairs in sublist for item in pairs]
+    assert not np.any(np.isnan(np.asarray(flat_edges)))
+    flat_types = [item for sublist in types for item in sublist]
+    assert not np.any(np.isnan(np.asarray(flat_types)))
+    assert not torch.any(torch.isnan(kd_description))
+    assert not torch.any(torch.isnan(kd_positions))
+    assert not torch.any(torch.isnan(recon_relations))
+    assert not torch.any(torch.isnan(recon_positions))
+    assert not torch.any(torch.isnan(gen_outputs))
+    assert not torch.any(torch.isnan(pointer))
+
+    assert not torch.sum(node_masks)==0
+    assert not torch.sum(kd_description_masks)==0
+    assert not torch.sum(recon_masks)==0
+    assert not torch.sum(gen_masks)==0
+    assert not torch.sum(pointer_masks)==0
 
     kd_description = kd_description.to(device)
     #kd_description = kd_description.half()
     kd_description_masks = kd_description_masks.to(device)
     #kd_description_masks = kd_description_masks.half()
-    with torch.cuda.amp.autocast():
+    with torch.cuda.amp.autocast(enabled=config['use_amp']):
         output_dict = teacher(input_ids=kd_description,
                           attention_mask=kd_description_masks,
                           output_hidden_states=True,
@@ -65,7 +87,7 @@ def run_train_batch(config, batch, teacher, student, plm, reconstructor, copyer,
 
     nodes = nodes.to(device)
     #nodes = nodes.half()
-    with torch.cuda.amp.autocast():
+    with torch.cuda.amp.autocast(enabled=config['use_amp']):
         student_embeddings = student(nodes, edges, types)
 
     node_masks = node_masks.to(device)
@@ -78,17 +100,18 @@ def run_train_batch(config, batch, teacher, student, plm, reconstructor, copyer,
     #gen_outputs = gen_outputs.half()
     gen_masks = gen_masks.to(device)
     #gen_masks = gen_masks.half()
-    with torch.cuda.amp.autocast():
+    #print(teacher_embeddings)
+    with torch.cuda.amp.autocast(enabled=config['use_amp']):
         output_dict = plm(input_ids=None,
-                      inputs_embeds=teacher_embeddings,
-                      attention_mask=node_masks,
-                      
-                      decoder_input_ids=gen_outputs[:, :-1],
-                      decoder_attention_mask=gen_masks[:, :-1],
-                      
-                      output_hidden_states=True,
-                      labels=gen_outputs[:, 1:].contiguous(),
-                      return_dict=True)
+                  inputs_embeds=teacher_embeddings,
+                  attention_mask=node_masks,
+                  
+                  decoder_input_ids=gen_outputs[:, :-1],
+                  decoder_attention_mask=gen_masks[:, :-1],
+                  
+                  output_hidden_states=True,
+                  labels=gen_outputs[:, 1:].contiguous(),
+                  return_dict=True)
     gen_loss = output_dict["loss"]
 
     decoder_input_embeddings = plm.get_input_embeddings()(gen_outputs[:, :-1])
@@ -97,7 +120,7 @@ def run_train_batch(config, batch, teacher, student, plm, reconstructor, copyer,
     #pointer = pointer.half()
     pointer_masks = pointer_masks.to(device)
     #pointer_masks = pointer_masks.half()
-    with torch.cuda.amp.autocast():
+    with torch.cuda.amp.autocast(enabled=config['use_amp']):
         copy_prob = copyer(decoder_input_embeddings, decoder_output_hiddens, pointer[:, 1:])
     copy_loss = copy_prob.masked_select(pointer_masks[:, 1:]).mean()
 
@@ -107,7 +130,7 @@ def run_train_batch(config, batch, teacher, student, plm, reconstructor, copyer,
     #recon_relations = recon_relations.half()
     recon_masks = recon_masks.to(device)
     #recon_masks = recon_masks.half()
-    with torch.cuda.amp.autocast():
+    with torch.cuda.amp.autocast(enabled=config['use_amp']):
         rec_logits = reconstructor(recon_positions, output_dict["encoder_hidden_states"][-1])
     rec_loss = compute_ce_loss(rec_logits, recon_relations, recon_masks)
 
@@ -116,11 +139,16 @@ def run_train_batch(config, batch, teacher, student, plm, reconstructor, copyer,
 
     plm_optimizer.zero_grad()
     external_optimizer.zero_grad()
-    #loss.backward()
+    # not needed with following line? loss.backward()
     scaler.scale(loss).backward()
-    external_optimizer.step()
-    plm_optimizer.step()
-
+    #------------------try to solve nan?
+    # not needed with scalar step external_optimizer.step()
+    # not needed with scalar step plm_optimizer.step()
+    #torch.nn.utils.clip_grad_norm_(plm.parameters(), 1)
+    scaler.step(plm_optimizer)
+    scaler.step(external_optimizer)
+    scaler.update()
+    print("add update")
     return gen_loss.item(), rec_loss.item(), kd_loss.item(), copy_loss.item()
 
 
@@ -134,8 +162,9 @@ def run_eval_batch(config, batch, teacher, student, plm, reconstructor, copyer, 
                           attention_mask=kd_description_masks,
                           output_hidden_states=True,
                           return_dict=True)
-    positions = kd_positions.unsqueeze(-1).expand(-1, -1, output_dict["encoder_last_hidden_state"].size(-1)).to(device)
-    teacher_embeddings = torch.gather(output_dict["encoder_last_hidden_state"], dim=1, index=positions)
+    encoder_last_hidden_state = output_dict["hidden_states"][-1]
+    positions = kd_positions.unsqueeze(-1).expand(-1, -1, encoder_last_hidden_state.size(-1)).to(device)
+    teacher_embeddings = torch.gather(encoder_last_hidden_state, dim=1, index=positions)
     teacher_embeddings = teacher_embeddings.detach()
 
     nodes = nodes.to(device)
@@ -244,7 +273,7 @@ def train(config):
                    num_samples=config["num_samples"], usage="train"),
         batch_size=config["train_batch_size"],
         shuffle=True,
-        num_workers=4,
+        num_workers=2,
         drop_last=True,
         collate_fn=collate_fn_graph_text,
         pin_memory=True)
@@ -256,7 +285,7 @@ def train(config):
                    num_samples="all", usage="valid"),
         batch_size=config["eval_batch_size"],
         shuffle=False,
-        num_workers=4,
+        num_workers=2,
         drop_last=False,
         collate_fn=collate_fn_graph_text,
         pin_memory=True)
@@ -267,10 +296,10 @@ def train(config):
     rec_losses = []
     best_gen_loss = None
     #new
-    scaler = torch.cuda.amp.GradScaler()
+    scaler = torch.cuda.amp.GradScaler(enabled=config['use_amp'])
 
     for epoch_idx in range(config["start_epoch"], config["epochs"]):
-        with torch.cuda.amp.autocast():
+        with torch.cuda.amp.autocast(enabled=config['use_amp']):
             teacher.train()
             student.train()
             plm.train()
@@ -328,7 +357,7 @@ def train(config):
 
         if best_gen_loss is None or valid_gen_loss <= best_gen_loss:
             output_dir = '{}-{}-{}'.format(config["dataset"], config["num_samples"], str(epoch_idx))
-            saved_path = os.path.join("../ckpt", output_dir)
+            saved_path = os.path.join(config["model_save_path"]+"chinesekg2text/ckpt", output_dir)
             if not os.path.exists(saved_path):
                 os.makedirs(saved_path)
 
@@ -362,7 +391,7 @@ def test(config):
     vocabs["relation"] = Vocab(config["relation_vocab"])
 
     # logger.info("Build Teacher Model.")
-    # teacher = BartForConditionalGeneration.from_pretrained(config["teacher_dir"])
+    # teacher = T5ForConditionalGeneration.from_pretrained(config["teacher_dir"])
     # teacher.requires_grad = False
     # for para in teacher.parameters():
     #     para.requires_grad = False
@@ -375,15 +404,19 @@ def test(config):
     student.to(device)
 
     logger.info("Build PLM Model.")
-    bart_tokenizer = BartTokenizer.from_pretrained(config["fine_tuned_plm_dir"])
-    plm = BartForConditionalGeneration.from_pretrained(config["fine_tuned_plm_dir"])
+    bert_tokenizer = BertTokenizer.from_pretrained(config["fine_tuned_plm_dir"])
+    #bert_tokenizer.bos_token="<s>"
+    #bert_tokenizer.eos_token="</s>"
+    #bert_tokenizer.mask_token="[MASK]"
+
+    plm = T5ForConditionalGeneration.from_pretrained(config["fine_tuned_plm_dir"])
     plm.to(device)
 
     logger.info("Create testing dataset.")
     test_dataloader = DataLoader(
         S2SDataset(data_dir=config["data_dir"], dataset=config["dataset"],
-                   tokenizer=bart_tokenizer, node_vocab=vocabs["node"], relation_vocab=vocabs["relation"],
-                   num_samples="all", usage="test"),
+                   tokenizer=bert_tokenizer, node_vocab=vocabs["node"], relation_vocab=vocabs["relation"],
+                   num_samples="all", usage="train"),
         batch_size=config["test_batch_size"],
         shuffle=False,
         num_workers=4,
@@ -408,6 +441,7 @@ def test(config):
             #                       attention_mask=kd_description_masks,
             #                       output_hidden_states=True,
             #                       return_dict=True)
+            # encoder_last_hidden_state = output_dict["hidden_states"][-1]
             # positions = kd_positions.unsqueeze(-1).expand(-1, -1, output_dict["encoder_last_hidden_state"].size(-1)).to(device)
             # teacher_embeddings = torch.gather(output_dict["encoder_last_hidden_state"], dim=1, index=positions).detach()
 
@@ -415,15 +449,37 @@ def test(config):
             student_embeddings = student(nodes, edges, types)
 
             node_masks = node_masks.to(device)
+            #test_input_ids = torch.ones((student_embeddings.shape[0], 1), dtype=torch.long, device=device)
+            #generated_ids = plm.generate(input_ids=None,
+            #                             inputs_embeds=student_embeddings,
+            #                             attention_mask=node_masks,
+            #                             num_beams=4,
+            #                             max_length=config["max_seq_length"],
+            #                             early_stopping=True)
+
+            num_beams = 4
+            input_ids = torch.ones((num_beams, 1), device=device, dtype=torch.long)
+            input_ids = input_ids * plm.config.decoder_start_token_id
+            #print(student_embeddings.size())
+            #print(student_embeddings[-1])
+            #does not work student_embeddings = torch.tensor(2*np.random.uniform(size=(12, 55, 512))-1, device = device, dtype=torch.double)
+            model_kwargs = {
+                "encoder_outputs": plm.get_encoder()(
+                    inputs_embeds=student_embeddings, 
+                    return_dict=True)
+            }#.repeat_interleave(num_beams, dim=0)
+            # also extra input_ids = bert_tokenizer("生活的真谛是是mask。生活的真谛是mask。生活的真谛是mask。生活的真谛是mask。生活的真谛是mask。生活的真谛是ma",  return_tensors='pt').input_ids
+            #input_ids = input_ids.to(device)
             generated_ids = plm.generate(input_ids=None,
-                                         inputs_embeds=student_embeddings,
                                          attention_mask=node_masks,
                                          num_beams=4,
                                          max_length=config["max_seq_length"],
-                                         early_stopping=True)
-
-            generated = bart_tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
-            reference = bart_tokenizer.batch_decode(gen_outputs, skip_special_tokens=True)
+                                         early_stopping=True,**model_kwargs
+                                        )
+            #print(generated_ids.size())
+            generated = bert_tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
+            print(generated)
+            reference = bert_tokenizer.batch_decode(gen_outputs, skip_special_tokens=True)
             generated_text.extend(generated)
             reference_text.extend(reference)
 
@@ -441,10 +497,19 @@ def test(config):
 
 
 def main():
+    print("updated train code")
     config = read_configuration("config.yaml")
 
     if config["mode"] == "train":
         train(config)
+    if config['mode'] == "train_colab":
+        config["data_dir"] = config["colab_data_dir"] 
+        config['node_vocab'] = config['colab_node_vocab']
+        config['relation_vocab'] = config['colab_relation_vocab']
+        config['node_embedding'] = config['colab_node_embedding']
+        train(config)
+    if config['mode'] == "train_colab":
+        config['model_save_path'] = config['vertex_model_save_path']
     else:
         test(config)
 
