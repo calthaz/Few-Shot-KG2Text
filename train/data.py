@@ -1,3 +1,4 @@
+BUCKET = "gs://chinesekg2text-bucket"
 import codecs
 import json
 import torch
@@ -8,11 +9,21 @@ import pickle
 import os
 import numpy as np
 from torch.utils.data import Dataset
-
+from google.cloud import storage
 
 class Vocab(object):
-    def __init__(self, filename):
-        self._token2idx = pickle.load(open(filename, "rb"))
+    def __init__(self, filename, mode):
+        self.mode = mode
+        if(self.mode=="train_vertex"):
+            client = storage.Client()
+            # https://console.cloud.google.com/storage/browser/[bucket-id]/
+            bucket = client.get_bucket(BUCKET)
+            # Then do other things...
+            blob = bucket.get_blob(os.path.join("ChineseKG2Text_data", filename))
+            vfile = blob.download_as_bytes()
+        else: 
+            vfile = open(filename, "rb")
+        self._token2idx = pickle.load(vfile)
         self._idx2token = {v: k for k, v in self._token2idx.items()}
 
     def size(self):
@@ -52,7 +63,7 @@ class NLP:
 class S2SDataset(Dataset):
     """Dataset for sequence-to-sequence generative models, i.e., BART"""
 
-    def __init__(self, data_dir, dataset, tokenizer, node_vocab, relation_vocab, num_samples, usage):
+    def __init__(self, data_dir, dataset, tokenizer, node_vocab, relation_vocab, num_samples, usage, mode):
         self.data_dir = data_dir
         self.dataset = dataset
         self.tokenizer = tokenizer
@@ -60,6 +71,7 @@ class S2SDataset(Dataset):
         self.relation_vocab = relation_vocab
         self.num_samples = num_samples
         self.usage = usage
+        self.mode = mode
         self.input_nodes, self.input_edges, self.input_types, self.output_ids, self.pointer, \
             self.pairs, self.relations, self.positions, self.descriptions = self.prepare_data()
 
@@ -75,13 +87,31 @@ class S2SDataset(Dataset):
         read corpus file
         """
         try:
-            data = torch.load(os.path.join(self.data_dir, self.dataset, '{}_{}.tar'.format(self.usage, self.num_samples)))
+            if(self.mode=="train_vertex"):
+                client = storage.Client()
+                # https://console.cloud.google.com/storage/browser/[bucket-id]/
+                bucket = client.get_bucket(BUCKET)
+                # Then do other things...
+                blob = bucket.get_blob(os.path.join("ChineseKG2Text_data", self.data_dir, self.dataset, '{}_{}.tar'.format(self.usage, self.num_samples)))
+                data = torch.load(blob.download_as_bytes())
+            else:
+                data = torch.load(os.path.join(self.data_dir, self.dataset, '{}_{}.tar'.format(self.usage, self.num_samples)))
+            
             input_nodes, input_edges, input_types, output_ids, pointer, input_pairs, relations, positions, descriptions = \
                 data["nodes"], data["edges"], data["types"], data["outputs"], data["pointer"], data["pairs"], \
                 data["relations"], data["positions"], data["descriptions"]
         except FileNotFoundError:
             all_data = []
-            data_file = os.path.join(self.data_dir, self.dataset, '{}_processed.json'.format(self.usage))
+            if(self.mode=="train_vertex"):
+                client = storage.Client()
+                # https://console.cloud.google.com/storage/browser/[bucket-id]/
+                bucket = client.get_bucket(BUCKET)
+                # Then do other things...
+                blob = bucket.get_blob(os.path.join("ChineseKG2Text_data", self.data_dir, self.dataset, '{}_processed.json'.format(self.usage)))
+                data_file = blob.download_as_bytes()
+            else:
+                data_file = os.path.join(self.data_dir, self.dataset, '{}_processed.json'.format(self.usage))
+
             with codecs.open(data_file, "r") as fin:
                 for line in fin:
                     data = json.loads(line.strip())

@@ -1,5 +1,4 @@
 BUCKET = "gs://chinesekg2text-bucket"
-
 import os
 import torch
 import time
@@ -7,15 +6,17 @@ import numpy as np
 import pickle
 from torch import nn
 from logging import getLogger
-from data import Vocab, NLP, S2SDataset
-from utils import build_optimizer, init_seed, init_logger, init_device, read_configuration, collate_fn_graph_text, \
+from train.data import Vocab, NLP, S2SDataset
+from train.utils import build_optimizer, init_seed, init_logger, init_device, read_configuration, collate_fn_graph_text, \
     format_time
-from module import GraphEncoder, GraphReconstructor, GraphPointer
+from train.module import GraphEncoder, GraphReconstructor, GraphPointer
 #from transformers import BartTokenizer, BartForConditionalGeneration, BertModel, BertTokenizer
 #from transformers import AutoTokenizer, AutoModelForMaskedLM, BertLMHeadModel
 from transformers import BertTokenizer, T5EncoderModel, T5ForConditionalGeneration, Text2TextGenerationPipeline
 from torch.utils.data import Dataset, DataLoader
 from transformers import LogitsProcessorList, MinLengthLogitsProcessor, BeamSearchScorer
+import argparse
+
 
 
 def compute_kd_loss(node_embeddings, desc_embeddings, node_masks, kd_masks):
@@ -50,23 +51,23 @@ def run_train_batch(config, batch, teacher, student, plm, reconstructor, copyer,
         recon_relations, recon_positions, recon_masks, gen_outputs, gen_masks, pointer, pointer_masks = batch
     #------------------try to solve nan?
     #print(nodes)
-    assert not torch.any(torch.isnan(nodes))
-    flat_edges = [item for sublist in edges for pairs in sublist for item in pairs]
-    assert not np.any(np.isnan(np.asarray(flat_edges)))
-    flat_types = [item for sublist in types for item in sublist]
-    assert not np.any(np.isnan(np.asarray(flat_types)))
-    assert not torch.any(torch.isnan(kd_description))
-    assert not torch.any(torch.isnan(kd_positions))
-    assert not torch.any(torch.isnan(recon_relations))
-    assert not torch.any(torch.isnan(recon_positions))
-    assert not torch.any(torch.isnan(gen_outputs))
-    assert not torch.any(torch.isnan(pointer))
+    #assert not torch.any(torch.isnan(nodes))
+    #flat_edges = [item for sublist in edges for pairs in sublist for item in pairs]
+    #assert not np.any(np.isnan(np.asarray(flat_edges)))
+    #flat_types = [item for sublist in types for item in sublist]
+    #assert not np.any(np.isnan(np.asarray(flat_types)))
+    #assert not torch.any(torch.isnan(kd_description))
+    #assert not torch.any(torch.isnan(kd_positions))
+    #assert not torch.any(torch.isnan(recon_relations))
+    #assert not torch.any(torch.isnan(recon_positions))
+    #assert not torch.any(torch.isnan(gen_outputs))
+    #assert not torch.any(torch.isnan(pointer))
 
-    assert not torch.sum(node_masks)==0
-    assert not torch.sum(kd_description_masks)==0
-    assert not torch.sum(recon_masks)==0
-    assert not torch.sum(gen_masks)==0
-    assert not torch.sum(pointer_masks)==0
+    #assert not torch.sum(node_masks)==0
+    #assert not torch.sum(kd_description_masks)==0
+    #assert not torch.sum(recon_masks)==0
+    #assert not torch.sum(gen_masks)==0
+    #assert not torch.sum(pointer_masks)==0
 
     kd_description = kd_description.to(device)
     #kd_description = kd_description.half()
@@ -212,8 +213,8 @@ def train(config):
 
     logger.info("Build node and relation vocabularies.")
     vocabs = dict()
-    vocabs["node"] = Vocab(config["node_vocab"])
-    vocabs["relation"] = Vocab(config["relation_vocab"])
+    vocabs["node"] = Vocab(config["node_vocab"], mode = config['mode'])
+    vocabs["relation"] = Vocab(config["relation_vocab"], mode = config['mode'])
 
     logger.info("Build Teacher Model.")
     #teacher = BartForConditionalGeneration.from_pretrained(config["teacher_dir"])
@@ -270,7 +271,7 @@ def train(config):
     train_dataloader = DataLoader(
         S2SDataset(data_dir=config["data_dir"], dataset=config["dataset"],
                    tokenizer=bert_tokenizer, node_vocab=vocabs["node"], relation_vocab=vocabs["relation"],
-                   num_samples=config["num_samples"], usage="train"),
+                   num_samples=config["num_samples"], usage="train", mode=config["mode"]),
         batch_size=config["train_batch_size"],
         shuffle=True,
         num_workers=2,
@@ -282,7 +283,7 @@ def train(config):
     valid_dataloader = DataLoader(
         S2SDataset(data_dir=config["data_dir"], dataset=config["dataset"],
                    tokenizer=bert_tokenizer, node_vocab=vocabs["node"], relation_vocab=vocabs["relation"],
-                   num_samples="all", usage="valid"),
+                   num_samples="all", usage="valid", mode=config["mode"]),
         batch_size=config["eval_batch_size"],
         shuffle=False,
         num_workers=2,
@@ -416,7 +417,7 @@ def test(config):
     test_dataloader = DataLoader(
         S2SDataset(data_dir=config["data_dir"], dataset=config["dataset"],
                    tokenizer=bert_tokenizer, node_vocab=vocabs["node"], relation_vocab=vocabs["relation"],
-                   num_samples="all", usage="train"),
+                   num_samples="all", usage="test"),
         batch_size=config["test_batch_size"],
         shuffle=False,
         num_workers=4,
@@ -498,7 +499,95 @@ def test(config):
 
 def main():
     print("updated train code")
-    config = read_configuration("config.yaml")
+    parser = argparse.ArgumentParser()
+
+    #config = read_configuration("config.yaml")
+    parser.add_argument('--gpu_id', type=int, required=True)
+    parser.add_argument('--use_gpu', type=bool, required=True)
+    parser.add_argument('--seed', type=int, required=True)
+    parser.add_argument('--state', type=str, required=True)
+    parser.add_argument('--dataset', type=str, required=True)
+    parser.add_argument('--num_samples', type=str, required=True)
+    parser.add_argument('--reproducibility', type=bool, required=True)
+    parser.add_argument('--mode', type=str, required=True)
+    parser.add_argument('--use_amp', type=bool, required=True)
+    parser.add_argument('--data_dir', type=str, required=True)
+    parser.add_argument('--node_vocab', type=str, required=True)
+    parser.add_argument('--relation_vocab', type=str, required=True)
+    parser.add_argument('--node_embedding', type=str, required=True)
+    parser.add_argument('--colab_data_dir', type=str, required=True)
+    parser.add_argument('--colab_node_vocab', type=str, required=True)
+    parser.add_argument('--colab_relation_vocab', type=str, required=True)
+    parser.add_argument('--colab_node_embedding', type=str, required=True)
+    parser.add_argument('--teacher_dir', type=str, required=True)
+    parser.add_argument('--plm_dir', type=str, required=True)
+    parser.add_argument('--log_dir', type=str, required=True)
+    parser.add_argument('--model_save_path', type=str, required=True)
+    parser.add_argument('--colab_model_save_path', type=str, required=True)
+    parser.add_argument('--vertex_model_save_path', type=str, required=True)
+    parser.add_argument('--start_epoch', type=int, required=True)
+    parser.add_argument('--epochs', type=int, required=True)
+    parser.add_argument('--train_batch_size', type=int, required=True)
+    parser.add_argument('--plm_learner', type=str, required=True)
+    parser.add_argument('--plm_lr', type=float, required=True)
+    parser.add_argument('--external_learner', type=str, required=True)
+    parser.add_argument('--external_lr', type=float, required=True)
+    parser.add_argument('--rec_weight', type=float, required=True)
+    parser.add_argument('--kd_weight', type=float, required=True)
+    parser.add_argument('--cp_weight', type=float, required=True)
+    parser.add_argument('--gnn_layers', type=int, required=True)
+    parser.add_argument('--embedding_size', type=int, required=True)
+    parser.add_argument('--hidden_size', type=int, required=True)
+    parser.add_argument('--eval_batch_size', type=int, required=True)
+    parser.add_argument('--external_model', type=str, required=True)
+    parser.add_argument('--fine_tuned_plm_dir', type=str, required=True)
+    parser.add_argument('--test_batch_size', type=int, required=True)
+    parser.add_argument('--max_seq_length', type=int, required=True)
+    parser.add_argument('--output_dir', type=str, required=True)
+    args = parser.parse_args()
+    config={}
+    config['gpu_id']=args.gpu_id
+    config['use_gpu']=args.use_gpu
+    config['seed']=args.seed
+    config['state']=args.state
+    config['dataset']=args.dataset
+    config['num_samples']=args.num_samples
+    config['reproducibility']=args.reproducibility
+    config['mode']=args.mode
+    config['use_amp']=args.use_amp
+    config['data_dir']=args.data_dir
+    config['node_vocab']=args.node_vocab
+    config['relation_vocab']=args.relation_vocab
+    config['node_embedding']=args.node_embedding
+    config['colab_data_dir']=args.colab_data_dir
+    config['colab_node_vocab']=args.colab_node_vocab
+    config['colab_relation_vocab']=args.colab_relation_vocab
+    config['colab_node_embedding']=args.colab_node_embedding
+    config['teacher_dir']=args.teacher_dir
+    config['plm_dir']=args.plm_dir
+    config['log_dir']=args.log_dir
+    config['model_save_path']=args.model_save_path
+    config['colab_model_save_path']=args.colab_model_save_path
+    config['vertex_model_save_path']=args.vertex_model_save_path
+    config['start_epoch']=args.start_epoch
+    config['epochs']=args.epochs
+    config['train_batch_size']=args.train_batch_size
+    config['plm_learner']=args.plm_learner
+    config['plm_lr']=args.plm_lr
+    config['external_learner']=args.external_learner
+    config['external_lr']=args.external_lr
+    config['rec_weight']=args.rec_weight
+    config['kd_weight']=args.kd_weight
+    config['cp_weight']=args.cp_weight
+    config['gnn_layers']=args.gnn_layers
+    config['embedding_size']=args.embedding_size
+    config['hidden_size']=args.hidden_size
+    config['eval_batch_size']=args.eval_batch_size
+    config['external_model']=args.external_model
+    config['fine_tuned_plm_dir']=args.fine_tuned_plm_dir
+    config['test_batch_size']=args.test_batch_size
+    config['max_seq_length']=args.max_seq_length
+    config['output_dir']=args.output_dir
 
     if config["mode"] == "train":
         train(config)
@@ -508,8 +597,9 @@ def main():
         config['relation_vocab'] = config['colab_relation_vocab']
         config['node_embedding'] = config['colab_node_embedding']
         train(config)
-    if config['mode'] == "train_colab":
+    if config['mode'] == "train_vertex":
         config['model_save_path'] = config['vertex_model_save_path']
+        train(config)
     else:
         test(config)
 

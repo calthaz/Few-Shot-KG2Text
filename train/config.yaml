@@ -21,7 +21,7 @@ colab_node_vocab: '/content/drive/MyDrive/Colab Notebooks/ChineseKG2Text/preproc
 colab_relation_vocab: '/content/drive/MyDrive/Colab Notebooks/ChineseKG2Text/preprocess/relation.pkl'
 colab_node_embedding: '/content/drive/MyDrive/Colab Notebooks/ChineseKG2Text/preprocess/node_embeddings.npy'
 
-#dataset in image
+#dataset in vertex
 #docker_data_dir: "./Chinese_preprocess" #'../data'
 #docker_node_vocab: './preprocess/node.pkl'
 #docker_relation_vocab: './preprocess/relation.pkl'

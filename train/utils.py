@@ -8,7 +8,7 @@ import yaml
 import re
 import numpy as np
 from torch import optim
-from optim import CosineSchedule, TransformerSchedule
+from train.optim import CosineSchedule, TransformerSchedule
 
 
 def build_optimizer(parameters, learner, learning_rate, config):
