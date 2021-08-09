@@ -16,6 +16,7 @@ from transformers import BertTokenizer, T5EncoderModel, T5ForConditionalGenerati
 from torch.utils.data import Dataset, DataLoader
 from transformers import LogitsProcessorList, MinLengthLogitsProcessor, BeamSearchScorer
 import argparse
+import matplotlib.pyplot as plt
 
 
 
@@ -38,9 +39,58 @@ def compute_ce_loss(logits, labels, masks):
     loss = loss.masked_select(masks).mean()
     return loss
 
+def plot_grad(model, model_name):
+    layers = []
+    ave_grads = []
+    for n, p in model.named_parameters():
+        if(p.requires_grad) and ("bias" not in n):
+            layers.append(n)
+            if(p.grad is None):
+                ave_grads.append(0)
+            else:
+                #if(model_name=="plm"):
+                    #print(n, p.grad.abs().mean())
+                #ave_grads.append(p.grad.abs().mean())
+                ave_grads.append(torch.linalg.norm(p.grad))
+
+    plt.figure(figsize=(18, 4))
+    plt.plot(ave_grads, "o-", alpha=0.3)
+    plt.hlines(0, 0, len(ave_grads)+1, linewidth=1, color="k" )
+    plt.xticks(range(0,len(ave_grads), 1), layers, rotation="vertical")
+    plt.xlim(xmin=0, xmax=len(ave_grads))
+    plt.xlabel("Layers")
+    plt.ylabel("average gradient")
+    plt.title("Gradient flow for "+ model_name)
+    plt.grid(True)
+    plt.show()
+
+def print_norm(model, name):
+    print("--------------{}-------------".format(name))
+    for n, p in model.named_parameters():
+        if(p.requires_grad) and ("bias" not in n):
+            if(p.grad is None):
+                print(n, "None")
+            else:
+                print(n, torch.linalg.norm(p.grad))
+    print("--------------end {}-------------".format(name))
+def print_var_grad(grad):
+    print("--------------var_grad-------------")
+    print(grad[0, :, 0])
+    print(grad[1, :, 0])
+    print("--------------end var_grad-------------")
+
+def print_var_grad_norm(grad):
+    print("--------------var_grad_norm-------------")
+    print(torch.linalg.norm(grad))
+    print("--------------end var_norm-------------")
+
+def print_extra_loss(grad):
+    print("-----------extra_loss grad--------------")
+    print(grad)
+    print("-----------end extra_loss grad--------------")
 
 def run_train_batch(config, batch, teacher, student, plm, reconstructor, copyer,
-                    plm_optimizer, external_optimizer, scaler, device):
+                    plm_optimizer, external_optimizer, scaler, extra_input_ids, device):
     #print(batch)
     # S2SDataset: data = {"nodes": input_nodes, "edges": input_edges, "types": input_types, "outputs": output_ids,
     # "pointer": pointer, "pairs": input_pairs, "relations": relations, "positions": positions,
@@ -70,9 +120,7 @@ def run_train_batch(config, batch, teacher, student, plm, reconstructor, copyer,
     #assert not torch.sum(pointer_masks)==0
 
     kd_description = kd_description.to(device)
-    #kd_description = kd_description.half()
     kd_description_masks = kd_description_masks.to(device)
-    #kd_description_masks = kd_description_masks.half()
     with torch.cuda.amp.autocast(enabled=config['use_amp']):
         output_dict = teacher(input_ids=kd_description,
                           attention_mask=kd_description_masks,
@@ -87,21 +135,16 @@ def run_train_batch(config, batch, teacher, student, plm, reconstructor, copyer,
     teacher_embeddings = teacher_embeddings.detach()
 
     nodes = nodes.to(device)
-    #nodes = nodes.half()
     with torch.cuda.amp.autocast(enabled=config['use_amp']):
         student_embeddings = student(nodes, edges, types)
+    # student_embeddings.register_hook(print_var_grad_norm)
 
     node_masks = node_masks.to(device)
-    #node_masks = node_masks.half()
     kd_masks = torch.ne(kd_positions, 0).to(device)
-    #kd_masks = kd_masks.half()
     kd_loss = compute_kd_loss(student_embeddings, teacher_embeddings, node_masks, kd_masks)
 
     gen_outputs = gen_outputs.to(device)
-    #gen_outputs = gen_outputs.half()
     gen_masks = gen_masks.to(device)
-    #gen_masks = gen_masks.half()
-    #print(teacher_embeddings)
     with torch.cuda.amp.autocast(enabled=config['use_amp']):
         output_dict = plm(input_ids=None,
                   inputs_embeds=teacher_embeddings,
@@ -115,29 +158,40 @@ def run_train_batch(config, batch, teacher, student, plm, reconstructor, copyer,
                   return_dict=True)
     gen_loss = output_dict["loss"]
 
+    logits = output_dict['logits']
+    extra_logits = logits[:, :, extra_input_ids]
+    #extra_logits.register_hook(print)
+    extra_loss = (extra_logits-(extra_logits.detach()-1)).mean()
+    #extra_loss.register_hook(print_extra_loss)
+
     decoder_input_embeddings = plm.get_input_embeddings()(gen_outputs[:, :-1])
     decoder_output_hiddens = output_dict["decoder_hidden_states"][-1]
+    # decoder_output_hiddens.register_hook(print_var_grad_norm)
+    decoder_output_hiddens = torch.nn.functional.normalize(decoder_output_hiddens)
+    
+    # assert not torch.any(torch.isnan(decoder_output_hiddens))
+    # print("decoder_input_embeddings", decoder_input_embeddings[0, 0, 0])
+    # print("decoder_output_hiddens", decoder_output_hiddens[0, 0, 0])
+
+
     pointer = pointer.to(device)
-    #pointer = pointer.half()
     pointer_masks = pointer_masks.to(device)
-    #pointer_masks = pointer_masks.half()
     with torch.cuda.amp.autocast(enabled=config['use_amp']):
         copy_prob = copyer(decoder_input_embeddings, decoder_output_hiddens, pointer[:, 1:])
+    # copy_prob.register_hook(print_var_grad_norm)
     copy_loss = copy_prob.masked_select(pointer_masks[:, 1:]).mean()
+    #copy_loss.register_hook(print)
 
     recon_positions = recon_positions.to(device)
-    #recon_positions = recon_positions.half()
     recon_relations = recon_relations.to(device)
-    #recon_relations = recon_relations.half()
     recon_masks = recon_masks.to(device)
-    #recon_masks = recon_masks.half()
     with torch.cuda.amp.autocast(enabled=config['use_amp']):
         rec_logits = reconstructor(recon_positions, output_dict["encoder_hidden_states"][-1])
+    # rec_logits.register_hook(print_var_grad_norm)
     rec_loss = compute_ce_loss(rec_logits, recon_relations, recon_masks)
 
-    loss = gen_loss + rec_loss * config["rec_weight"] + kd_loss * config["kd_weight"] + copy_loss * config["cp_weight"]
-    
-
+    loss = gen_loss*config["gen_weight"] + rec_loss*config["rec_weight"] + kd_loss*config["kd_weight"] + extra_loss*config["extra_weight"] + copy_loss*config["cp_weight"] #
+    # 
     plm_optimizer.zero_grad()
     external_optimizer.zero_grad()
     # not needed with following line? loss.backward()
@@ -145,15 +199,28 @@ def run_train_batch(config, batch, teacher, student, plm, reconstructor, copyer,
     #------------------try to solve nan?
     # not needed with scalar step external_optimizer.step()
     # not needed with scalar step plm_optimizer.step()
-    #torch.nn.utils.clip_grad_norm_(plm.parameters(), 1)
+    torch.nn.utils.clip_grad_norm_(plm.parameters(), 1)
+    # torch.nn.utils.clip_grad_norm_(copyer.parameters(), 1)
+    # plot_grad(teacher, "teacher")
+    # plot_grad(student, "student")
+    # plot_grad(plm, "plm")
+    # plot_grad(reconstructor, "reconstructor")
+    # plot_grad(copyer, "copyer")
+    # print_norm(student, "student")
+    # print_norm(plm, "plm")
+    # print_norm(reconstructor, "reconstructor")
+    # print_norm(copyer, "copyer")
+
     scaler.step(plm_optimizer)
     scaler.step(external_optimizer)
     scaler.update()
-    print("add update")
-    return gen_loss.item(), rec_loss.item(), kd_loss.item(), copy_loss.item()
+    #print("add update")
 
 
-def run_eval_batch(config, batch, teacher, student, plm, reconstructor, copyer, device):
+    return gen_loss.item(), rec_loss.item(), kd_loss.item(), copy_loss.item(), extra_loss.item()
+
+
+def run_eval_batch(config, batch, teacher, student, plm, reconstructor, copyer, extra_input_ids, device):
     nodes, edges, types, node_masks, kd_description, kd_description_masks, kd_positions, \
         recon_relations, recon_positions, recon_masks, gen_outputs, gen_masks, pointer, pointer_masks = batch
 
@@ -186,6 +253,10 @@ def run_eval_batch(config, batch, teacher, student, plm, reconstructor, copyer, 
                       labels=gen_outputs[:, 1:].contiguous(),
                       return_dict=True)
     gen_loss = output_dict["loss"]
+    
+    logits = output_dict['logits']
+    extra_logits = logits[:, :, extra_input_ids]
+    extra_loss = (extra_logits-(extra_logits.detach()-1)).mean()
 
     decoder_input_embeddings = plm.get_input_embeddings()(gen_outputs[:, :-1])
     decoder_output_hiddens = output_dict["decoder_hidden_states"][-1]
@@ -200,7 +271,7 @@ def run_eval_batch(config, batch, teacher, student, plm, reconstructor, copyer, 
     rec_logits = reconstructor(recon_positions, output_dict["encoder_hidden_states"][-1])
     rec_loss = compute_ce_loss(rec_logits, recon_relations, recon_masks)
 
-    return gen_loss.item(), rec_loss.item(), kd_loss.item(), copy_loss.item()
+    return gen_loss.item(), rec_loss.item(), kd_loss.item(), copy_loss.item(), extra_loss.item()
 
 
 def train(config):
@@ -237,6 +308,10 @@ def train(config):
     bert_tokenizer.bos_token="<s>"
     bert_tokenizer.eos_token="</s>"
     bert_tokenizer.mask_token="[MASK]"
+
+    extra_tokens = ["extra"+str(x) for x in range(100)]
+    extra_input_ids = bert_tokenizer(extra_tokens, return_tensors="pt").input_ids[:, 1]
+    extra_input_ids = extra_input_ids.to(device)
     #plm = BartForConditionalGeneration.from_pretrained(config["plm_dir"])
     plm = T5ForConditionalGeneration.from_pretrained(config["plm_dir"])
     plm.to(device)
@@ -298,6 +373,7 @@ def train(config):
     best_gen_loss = None
     #new
     scaler = torch.cuda.amp.GradScaler(enabled=config['use_amp'])
+    torch.autograd.set_detect_anomaly(False)
 
     for epoch_idx in range(config["start_epoch"], config["epochs"]):
         with torch.cuda.amp.autocast(enabled=config['use_amp']):
@@ -311,15 +387,16 @@ def train(config):
         for batch_idx, batch in enumerate(train_dataloader):
             #new
             
-            gen_loss, rec_loss, kd_loss, copy_loss = run_train_batch(config, batch, teacher, student, plm, reconstructor,
-                                                                     copyer, plm_optimizer, external_optimizer, scaler, device)
+            gen_loss, rec_loss, kd_loss, copy_loss, extra_loss = run_train_batch(config, batch, teacher, student, plm, reconstructor,
+                                                                     copyer, plm_optimizer, external_optimizer, scaler, extra_input_ids, device)
 
-            logger.info("Epoch {} batch {}: KD loss {}, Gen loss {} Rec loss {} Copy loss {}.".format(epoch_idx,
+            logger.info("Epoch {} batch {}: KD loss {}, Gen loss {} Rec loss {} Copy loss {} Extra loss {}.".format(epoch_idx,
                                                                                                       batch_idx,
                                                                                                       kd_loss,
                                                                                                       gen_loss,
                                                                                                       rec_loss,
-                                                                                                      copy_loss))
+                                                                                                      copy_loss,
+                                                                                                      extra_loss))
 
             train_gen_loss += gen_loss
             kd_losses.append(kd_loss)
@@ -344,8 +421,8 @@ def train(config):
             valid_gen_loss = 0
             t0 = time.time()
             for batch in valid_dataloader:
-                gen_loss, rec_loss, kd_loss, copy_loss = run_eval_batch(config, batch, teacher, student, plm,
-                                                                        reconstructor, copyer, device)
+                gen_loss, rec_loss, kd_loss, copy_loss, extra_loss = run_eval_batch(config, batch, teacher, student, plm,
+                                                                        reconstructor, copyer, extra_input_ids, device)
                 valid_gen_loss += gen_loss
 
             valid_gen_loss /= len(valid_dataloader)
@@ -357,8 +434,8 @@ def train(config):
                                                                                                       valid_time))
 
         if best_gen_loss is None or valid_gen_loss <= best_gen_loss:
-            output_dir = '{}-{}-{}'.format(config["dataset"], config["num_samples"], str(epoch_idx))
-            saved_path = os.path.join(config["model_save_path"]+"chinesekg2text/ckpt", output_dir)
+            output_dir = '{}-{}'.format(config["dataset"], config["num_samples"])
+            saved_path = os.path.join(config["model_save_path"], output_dir)
             if not os.path.exists(saved_path):
                 os.makedirs(saved_path)
 
@@ -388,8 +465,8 @@ def test(config):
 
     logger.info("Build node and relation vocabularies.")
     vocabs = dict()
-    vocabs["node"] = Vocab(config["node_vocab"])
-    vocabs["relation"] = Vocab(config["relation_vocab"])
+    vocabs["node"] = Vocab(config["node_vocab"], config['mode'])
+    vocabs["relation"] = Vocab(config["relation_vocab"], config['mode'])
 
     # logger.info("Build Teacher Model.")
     # teacher = T5ForConditionalGeneration.from_pretrained(config["teacher_dir"])
@@ -417,7 +494,7 @@ def test(config):
     test_dataloader = DataLoader(
         S2SDataset(data_dir=config["data_dir"], dataset=config["dataset"],
                    tokenizer=bert_tokenizer, node_vocab=vocabs["node"], relation_vocab=vocabs["relation"],
-                   num_samples="all", usage="test"),
+                   num_samples="all", usage="train", mode=config['mode']),
         batch_size=config["test_batch_size"],
         shuffle=False,
         num_workers=4,
@@ -535,6 +612,8 @@ def main():
     parser.add_argument('--rec_weight', type=float, required=True)
     parser.add_argument('--kd_weight', type=float, required=True)
     parser.add_argument('--cp_weight', type=float, required=True)
+    parser.add_argument('--extra_weight', type=float, required=True)
+    parser.add_argument('--gen_weight', type=float, required=True)
     parser.add_argument('--gnn_layers', type=int, required=True)
     parser.add_argument('--embedding_size', type=int, required=True)
     parser.add_argument('--hidden_size', type=int, required=True)
@@ -579,6 +658,8 @@ def main():
     config['rec_weight']=args.rec_weight
     config['kd_weight']=args.kd_weight
     config['cp_weight']=args.cp_weight
+    config['extra_weight']=args.extra_weight
+    config['gen_weight']=args.gen_weight
     config['gnn_layers']=args.gnn_layers
     config['embedding_size']=args.embedding_size
     config['hidden_size']=args.hidden_size
@@ -596,6 +677,7 @@ def main():
         config['node_vocab'] = config['colab_node_vocab']
         config['relation_vocab'] = config['colab_relation_vocab']
         config['node_embedding'] = config['colab_node_embedding']
+        config['model_save_path'] = config['colab_model_save_path']
         train(config)
     if config['mode'] == "train_vertex":
         config['model_save_path'] = config['vertex_model_save_path']

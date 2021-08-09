@@ -133,6 +133,7 @@ class S2SDataset(Dataset):
                 edges = data["split_edges"]
                 types = self.relation_vocab.convert_tokens_to_ids(data["split_types"])
 
+                #outputs = self.tokenizer.convert_tokens_to_ids(["<s>"] + data["plm_output"] + ["</s>"])
                 outputs = self.tokenizer.convert_tokens_to_ids(["<s>"] + data["plm_output"] + ["</s>"])
                 copy_pointer = [0] + data["pointer"] + [0]
                 assert len(outputs) == len(copy_pointer), "The length of outputs and pointer should be matched."

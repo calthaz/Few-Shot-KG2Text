@@ -108,7 +108,7 @@ def init_logger(config):
 
 
 def read_configuration(config_file):
-    yaml_loader = yaml.FullLoader
+    yaml_loader = yaml.Loader
     yaml_loader.add_implicit_resolver(
         u'tag:yaml.org,2002:float',
         re.compile(u'''^(?:

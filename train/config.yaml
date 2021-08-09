@@ -6,14 +6,14 @@ state: INFO
 dataset: preprocessed
 num_samples: all  # 500
 reproducibility: True
-mode: train
+mode: test
 use_amp: True
 
 # dataset
-data_dir: '../Chinese_preprocess' #'../data'
-node_vocab: '../preprocess/node.pkl'
-relation_vocab: '../preprocess/relation.pkl'
-node_embedding: '../preprocess/node_embeddings.npy'
+data_dir: 'Chinese_preprocess' #'../data'
+node_vocab: 'preprocess/node.pkl'
+relation_vocab: 'preprocess/relation.pkl'
+node_embedding: 'preprocess/node_embeddings.npy'
 
 # dataset on colab
 colab_data_dir: "/content/drive/MyDrive/Colab Notebooks/ChineseKG2Text/Chinese_preprocess" #'../data'
@@ -32,7 +32,7 @@ teacher_dir: "uer/t5-small-chinese-cluecorpussmall" #"bert-base-chinese" #"hfl/c
 plm_dir: "uer/t5-small-chinese-cluecorpussmall" #"bert-base-chinese" #"hfl/chinese-xlnet-base" #
 log_dir: './logging'
 model_save_path: './models/'
-colab_model_save_path: '/content/drive/MyDrive/Colab Notebooks/ChineseKG2Text/models/'
+colab_model_save_path: '/content/drive/MyDrive/Colab Notebooks/ChineseKG2Text/models/chinesekg2text/ckpt-0809'
 vertex_model_save_path: 'gs://chinesekg2text-bucket/models/'
 
 # training settings
@@ -46,6 +46,8 @@ external_lr: 0.00001
 rec_weight: 1.0
 kd_weight: 1.0
 cp_weight: 0.5
+extra_weight: 0.7
+gen_weight: 2
 gnn_layers: 2
 embedding_size: 512 #1024
 hidden_size: 512
@@ -54,8 +56,8 @@ hidden_size: 512
 eval_batch_size: 20
 
 # testing settings
-external_model: '../preprocessed-all-18/external.bin'
-fine_tuned_plm_dir: '../preprocessed-all-18'
+external_model: 'ckpt/preprocessed-all-adjusted-more-weights-0809/external.bin'
+fine_tuned_plm_dir: 'ckpt/preprocessed-all-adjusted-more-weights-0809'
 test_batch_size: 20
 max_seq_length: 100
-output_dir: '../preprocessed-all-18'
+output_dir: 'ckpt/preprocessed-all-adjusted-more-weights-0809'

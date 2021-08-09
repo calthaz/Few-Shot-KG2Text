@@ -162,4 +162,3 @@ class GraphPointer(nn.Module):
 
         return copy_prob
 
-

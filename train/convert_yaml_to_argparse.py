@@ -1,7 +1,7 @@
-import utils
+import train.utils
 print("################# Code to add in train.py #################")
 print("parser = argparse.ArgumentParser()")
-config = utils.read_configuration("config.yaml")
+config = train.utils.read_configuration("train/config.yaml")
 
 for key, value in config.items():
     print("parser.add_argument('--{}', type={}, required=True)".format(key, type(value).__name__))
