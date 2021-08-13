@@ -71,7 +71,7 @@ print("loss", loss)
 
 #input_ids = tokenizer("总结：研究表明养狗对人", return_tensors="pt").input_ids  # Batch size 1
 outputs = model.generate(input_ids) 
-generated = tokenizer.batch_decode(outputs, skip_special_tokens=True)
+generated = tokenizer.batch_decode(outputs)#, skip_special_tokens=True
 
 for index, gen in enumerate(generated):
     print("test line", test_lines[index])

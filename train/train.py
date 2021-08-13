@@ -14,7 +14,7 @@ from train.module import GraphEncoder, GraphReconstructor, GraphPointer
 #from transformers import AutoTokenizer, AutoModelForMaskedLM, BertLMHeadModel
 from transformers import BertTokenizer, T5EncoderModel, T5ForConditionalGeneration, Text2TextGenerationPipeline
 from torch.utils.data import Dataset, DataLoader
-from transformers import LogitsProcessorList, MinLengthLogitsProcessor, BeamSearchScorer
+from transformers import LogitsProcessorList, MinLengthLogitsProcessor, BeamSearchScorer, file_utils
 import argparse
 import matplotlib.pyplot as plt
 
@@ -98,7 +98,8 @@ def run_train_batch(config, batch, teacher, student, plm, reconstructor, copyer,
     # utils: return nodes, edges, types, node_masks, descriptions, description_masks, positions, relations, pairs, pair_masks, \
     #       outputs, output_masks, pointer, pointer_masks
     nodes, edges, types, node_masks, kd_description, kd_description_masks, kd_positions, \
-        recon_relations, recon_positions, recon_masks, gen_outputs, gen_masks, pointer, pointer_masks = batch
+        recon_relations, recon_positions, recon_masks, gen_outputs, gen_masks, pointer, pointer_masks, \
+        predictions, prediction_masks = batch
     #------------------try to solve nan?
     #print(nodes)
     #assert not torch.any(torch.isnan(nodes))
@@ -121,6 +122,9 @@ def run_train_batch(config, batch, teacher, student, plm, reconstructor, copyer,
 
     kd_description = kd_description.to(device)
     kd_description_masks = kd_description_masks.to(device)
+    # print("kd_description size", kd_description.size())
+    #print("kd_description", kd_description)
+    
     with torch.cuda.amp.autocast(enabled=config['use_amp']):
         output_dict = teacher(input_ids=kd_description,
                           attention_mask=kd_description_masks,
@@ -131,24 +135,31 @@ def run_train_batch(config, batch, teacher, student, plm, reconstructor, copyer,
     positions = kd_positions.unsqueeze(-1).expand(-1, -1, encoder_last_hidden_state.size(-1)).to(device)
     #Hidden-states of the model at the output of each layer plus the initial embedding outputs
     
-    teacher_embeddings = torch.gather(encoder_last_hidden_state, dim=1, index=positions)
+    teacher_embeddings = encoder_last_hidden_state
     teacher_embeddings = teacher_embeddings.detach()
 
+    teacher_nodes_embeddings = torch.gather(encoder_last_hidden_state, dim=1, index=positions)
+    teacher_nodes_embeddings = teacher_nodes_embeddings.detach()
+    # print("teacher_embeddings size", teacher_embeddings.size())
+
     nodes = nodes.to(device)
+    # print("nodes size", nodes.size())
+    #print("nodes", nodes)
     with torch.cuda.amp.autocast(enabled=config['use_amp']):
         student_embeddings = student(nodes, edges, types)
     # student_embeddings.register_hook(print_var_grad_norm)
 
     node_masks = node_masks.to(device)
     kd_masks = torch.ne(kd_positions, 0).to(device)
-    kd_loss = compute_kd_loss(student_embeddings, teacher_embeddings, node_masks, kd_masks)
+    kd_loss = compute_kd_loss(student_embeddings, teacher_nodes_embeddings, node_masks, kd_masks)
 
     gen_outputs = gen_outputs.to(device)
+    # print("gen_outputs size", gen_outputs.size())
     gen_masks = gen_masks.to(device)
     with torch.cuda.amp.autocast(enabled=config['use_amp']):
         output_dict = plm(input_ids=None,
-                  inputs_embeds=teacher_embeddings,
-                  attention_mask=node_masks,
+                  inputs_embeds = teacher_embeddings,
+                  attention_mask = kd_description_masks,#node_masks
                   
                   decoder_input_ids=gen_outputs[:, :-1],
                   decoder_attention_mask=gen_masks[:, :-1],
@@ -158,10 +169,10 @@ def run_train_batch(config, batch, teacher, student, plm, reconstructor, copyer,
                   return_dict=True)
     gen_loss = output_dict["loss"]
 
-    logits = output_dict['logits']
-    extra_logits = logits[:, :, extra_input_ids]
+    #logits = output_dict['logits']
+    #extra_logits = logits[:, :, extra_input_ids]
     #extra_logits.register_hook(print)
-    extra_loss = (extra_logits-(extra_logits.detach()-1)).mean()
+    extra_loss = torch.tensor(0.0) #(extra_logits-(extra_logits.detach()-1)).mean()
     #extra_loss.register_hook(print_extra_loss)
 
     decoder_input_embeddings = plm.get_input_embeddings()(gen_outputs[:, :-1])
@@ -173,14 +184,15 @@ def run_train_batch(config, batch, teacher, student, plm, reconstructor, copyer,
     # print("decoder_input_embeddings", decoder_input_embeddings[0, 0, 0])
     # print("decoder_output_hiddens", decoder_output_hiddens[0, 0, 0])
 
-
-    pointer = pointer.to(device)
-    pointer_masks = pointer_masks.to(device)
-    with torch.cuda.amp.autocast(enabled=config['use_amp']):
-        copy_prob = copyer(decoder_input_embeddings, decoder_output_hiddens, pointer[:, 1:])
-    # copy_prob.register_hook(print_var_grad_norm)
-    copy_loss = copy_prob.masked_select(pointer_masks[:, 1:]).mean()
-    #copy_loss.register_hook(print)
+    # what to do with copying now??
+    #pointer = pointer.to(device)
+    #pointer_masks = pointer_masks.to(device)
+    #with torch.cuda.amp.autocast(enabled=config['use_amp']):
+    #    copy_prob = copyer(decoder_input_embeddings, decoder_output_hiddens, pointer[:, 1:])
+    ## copy_prob.register_hook(print_var_grad_norm)
+    #copy_loss = copy_prob.masked_select(pointer_masks[:, 1:]).mean()
+    ##copy_loss.register_hook(print)
+    copy_loss = torch.tensor(0.0)
 
     recon_positions = recon_positions.to(device)
     recon_relations = recon_relations.to(device)
@@ -222,7 +234,8 @@ def run_train_batch(config, batch, teacher, student, plm, reconstructor, copyer,
 
 def run_eval_batch(config, batch, teacher, student, plm, reconstructor, copyer, extra_input_ids, device):
     nodes, edges, types, node_masks, kd_description, kd_description_masks, kd_positions, \
-        recon_relations, recon_positions, recon_masks, gen_outputs, gen_masks, pointer, pointer_masks = batch
+        recon_relations, recon_positions, recon_masks, gen_outputs, gen_masks, pointer, pointer_masks, \
+                predictions, prediction_masks = batch
 
     kd_description = kd_description.to(device)
     kd_description_masks = kd_description_masks.to(device)
@@ -238,15 +251,33 @@ def run_eval_batch(config, batch, teacher, student, plm, reconstructor, copyer, 
     nodes = nodes.to(device)
     student_embeddings = student(nodes, edges, types)
 
-    node_masks = node_masks.to(device)
+    node_masks = node_masks.to(device)#node_masks.to(device)
     kd_masks = torch.ne(kd_positions, 0).to(device)
     kd_loss = compute_kd_loss(student_embeddings, teacher_embeddings, node_masks, kd_masks)
+
+    extra_embeddings = plm.get_input_embeddings()(extra_input_ids)
+    extra_embeddings = extra_embeddings.to(device)
+
+    prediction_masks = prediction_masks.to(device)
+    student_inserted_embeddings = []
+    #print(predictions)
+    for batch_idx, student_embedding in enumerate(student_embeddings):
+        student_embedding_list = []
+        for pidx in predictions[batch_idx]:
+            if(pidx>0):
+                student_embedding_list.append(student_embeddings[batch_idx, pidx])
+            else:
+                student_embedding_list.append(extra_embeddings[-pidx])
+        student_embedding_stacked = torch.stack(student_embedding_list, 0)
+        student_inserted_embeddings.append(student_embedding_stacked)
+    student_inserted_embeddings = torch.stack(student_inserted_embeddings, 0)
+    student_inserted_embeddings = student_inserted_embeddings.to(device)
 
     gen_outputs = gen_outputs.to(device)
     gen_masks = gen_masks.to(device)
     output_dict = plm(input_ids=None,
-                      inputs_embeds=student_embeddings,
-                      attention_mask=node_masks,
+                      inputs_embeds=student_inserted_embeddings,
+                      attention_mask=prediction_masks,
                       decoder_input_ids=gen_outputs[:, :-1],
                       decoder_attention_mask=gen_masks[:, :-1],
                       output_hidden_states=True,
@@ -260,10 +291,11 @@ def run_eval_batch(config, batch, teacher, student, plm, reconstructor, copyer, 
 
     decoder_input_embeddings = plm.get_input_embeddings()(gen_outputs[:, :-1])
     decoder_output_hiddens = output_dict["decoder_hidden_states"][-1]
-    pointer = pointer.to(device)
-    pointer_masks = pointer_masks.to(device)
-    copy_prob = copyer(decoder_input_embeddings, decoder_output_hiddens, pointer[:, 1:])
-    copy_loss = copy_prob.masked_select(pointer_masks[:, 1:]).mean()
+    #pointer = pointer.to(device)
+    #pointer_masks = pointer_masks.to(device)
+    #copy_prob = copyer(decoder_input_embeddings, decoder_output_hiddens, pointer[:, 1:])
+    #copy_loss = copy_prob.masked_select(pointer_masks[:, 1:]).mean()
+    copy_loss = torch.tensor(0.0)
 
     recon_positions = recon_positions.to(device)
     recon_relations = recon_relations.to(device)
@@ -468,12 +500,13 @@ def test(config):
     vocabs["node"] = Vocab(config["node_vocab"], config['mode'])
     vocabs["relation"] = Vocab(config["relation_vocab"], config['mode'])
 
-    # logger.info("Build Teacher Model.")
-    # teacher = T5ForConditionalGeneration.from_pretrained(config["teacher_dir"])
-    # teacher.requires_grad = False
-    # for para in teacher.parameters():
-    #     para.requires_grad = False
-    # teacher.to(device)
+    logger.info("Build Teacher Model.")
+    #teacher = BartForConditionalGeneration.from_pretrained(config["teacher_dir"])
+    teacher = T5EncoderModel.from_pretrained(config["teacher_dir"])
+    teacher.requires_grad = False
+    for para in teacher.parameters():
+        para.requires_grad = False
+    teacher.to(device)
 
     logger.info("Build Student Model.")
     student = GraphEncoder(vocabs["node"].size(), vocabs["relation"].size(),
@@ -482,72 +515,95 @@ def test(config):
     student.to(device)
 
     logger.info("Build PLM Model.")
-    bert_tokenizer = BertTokenizer.from_pretrained(config["fine_tuned_plm_dir"])
-    #bert_tokenizer.bos_token="<s>"
-    #bert_tokenizer.eos_token="</s>"
-    #bert_tokenizer.mask_token="[MASK]"
+    bert_tokenizer = BertTokenizer.from_pretrained(config["plm_dir"])#config["fine_tuned_plm_dir"]
+    bert_tokenizer.bos_token="<s>"
+    bert_tokenizer.eos_token="</s>"
+    bert_tokenizer.mask_token="[MASK]"
 
-    plm = T5ForConditionalGeneration.from_pretrained(config["fine_tuned_plm_dir"])
+    plm = T5ForConditionalGeneration.from_pretrained(config["plm_dir"])#config["fine_tuned_plm_dir"]
     plm.to(device)
 
     logger.info("Create testing dataset.")
     test_dataloader = DataLoader(
         S2SDataset(data_dir=config["data_dir"], dataset=config["dataset"],
                    tokenizer=bert_tokenizer, node_vocab=vocabs["node"], relation_vocab=vocabs["relation"],
-                   num_samples="all", usage="train", mode=config['mode']),
+                   num_samples="all", usage="test", mode=config['mode']),
         batch_size=config["test_batch_size"],
         shuffle=False,
-        num_workers=4,
+        num_workers=2,
         drop_last=False,
         collate_fn=collate_fn_graph_text,
         pin_memory=True)
 
     student.eval()
-    # teacher.eval()
+    teacher.eval()
     plm.eval()
     idx = 0
+    teacher_text = []
     generated_text = []
     reference_text = []
+
+    extra_tokens = ["extra"+str(x) for x in range(100)]
+    extra_input_ids = bert_tokenizer(extra_tokens, return_tensors="pt").input_ids[:, 1]
+    extra_input_ids = extra_input_ids.to(device)
+    extra_embeddings = plm.get_input_embeddings()(extra_input_ids)
+    extra_embeddings = extra_embeddings.to(device)
+
     with torch.no_grad():
         for batch in test_dataloader:
             nodes, edges, types, node_masks, kd_description, kd_description_masks, kd_positions, \
-                recon_relations, recon_positions, recon_masks, gen_outputs, gen_masks, pointer, pointer_masks = batch
+                recon_relations, recon_positions, recon_masks, gen_outputs, gen_masks, pointer, pointer_masks, \
+                predictions, prediction_masks = batch
 
-            # kd_description = kd_description.to(device)
-            # kd_description_masks = kd_description_masks.to(device)
-            # output_dict = teacher(kd_description,
-            #                       attention_mask=kd_description_masks,
-            #                       output_hidden_states=True,
-            #                       return_dict=True)
-            # encoder_last_hidden_state = output_dict["hidden_states"][-1]
-            # positions = kd_positions.unsqueeze(-1).expand(-1, -1, output_dict["encoder_last_hidden_state"].size(-1)).to(device)
-            # teacher_embeddings = torch.gather(output_dict["encoder_last_hidden_state"], dim=1, index=positions).detach()
+            #-----------test with teacher--------------------
+            #kd_description = torch.ones_like(kd_description)
+            kd_description = kd_description.to(device)
+            #kd_description_masks = torch.ones_like(kd_description_masks)
+            kd_description_masks = kd_description_masks.to(device)
+
+            print(kd_description.size())
+            print(kd_description_masks.size())
+            
+            print(kd_description)
+            print(kd_description_masks)
+            
+            
+            output_dict = teacher(input_ids=kd_description,
+                                attention_mask=kd_description_masks,
+                                output_hidden_states=True,
+                                return_dict=True)
+
+            encoder_last_hidden_state = output_dict["hidden_states"][-1] #TODO I assume this is the last encoder state??
+            teacher_embeddings = encoder_last_hidden_state.detach()
+            #-----------------end test with teacher-------------------
 
             nodes = nodes.to(device)
             student_embeddings = student(nodes, edges, types)
 
-            node_masks = node_masks.to(device)
-            #test_input_ids = torch.ones((student_embeddings.shape[0], 1), dtype=torch.long, device=device)
-            #generated_ids = plm.generate(input_ids=None,
-            #                             inputs_embeds=student_embeddings,
-            #                             attention_mask=node_masks,
-            #                             num_beams=4,
-            #                             max_length=config["max_seq_length"],
-            #                             early_stopping=True)
+            node_masks = prediction_masks.to(device)#node_masks.to(device)
 
-            num_beams = 4
-            input_ids = torch.ones((num_beams, 1), device=device, dtype=torch.long)
-            input_ids = input_ids * plm.config.decoder_start_token_id
-            #print(student_embeddings.size())
-            #print(student_embeddings[-1])
-            #does not work student_embeddings = torch.tensor(2*np.random.uniform(size=(12, 55, 512))-1, device = device, dtype=torch.double)
+            student_inserted_embeddings = []
+            #print(predictions)
+            for batch_idx, student_embedding in enumerate(student_embeddings):
+                student_embedding_list = []
+                for pidx in predictions[batch_idx]:
+                    if(pidx>0):
+                        student_embedding_list.append(student_embeddings[batch_idx, pidx])
+                    else:
+                        student_embedding_list.append(extra_embeddings[-pidx])
+                student_embedding_stacked = torch.stack(student_embedding_list, 0)
+                student_inserted_embeddings.append(student_embedding_stacked)
+            student_inserted_embeddings = torch.stack(student_inserted_embeddings, 0)
+            student_inserted_embeddings = student_inserted_embeddings.to(device)
+            
+            student_output_dict = file_utils.ModelOutput()
+            setattr(student_output_dict , 'last_hidden_state', student_inserted_embeddings) 
             model_kwargs = {
-                "encoder_outputs": plm.get_encoder()(
-                    inputs_embeds=student_embeddings, 
-                    return_dict=True)
-            }#.repeat_interleave(num_beams, dim=0)
-            # also extra input_ids = bert_tokenizer("生活的真谛是是mask。生活的真谛是mask。生活的真谛是mask。生活的真谛是mask。生活的真谛是mask。生活的真谛是ma",  return_tensors='pt').input_ids
-            #input_ids = input_ids.to(device)
+                "encoder_outputs": student_output_dict #plm.get_encoder()(
+                    #inputs_embeds=output_dict["hidden_states"][-1], #teacher_embeddings, #student_inserted_embeddings
+                    #return_dict=True)
+            }
+            
             generated_ids = plm.generate(input_ids=None,
                                          attention_mask=node_masks,
                                          num_beams=4,
@@ -555,6 +611,8 @@ def test(config):
                                          early_stopping=True,**model_kwargs
                                         )
             #print(generated_ids.size())
+            teacher_descriptions = bert_tokenizer.batch_decode(kd_description, skip_special_tokens=True)
+            teacher_text.extend(teacher_descriptions)
             generated = bert_tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
             print(generated)
             reference = bert_tokenizer.batch_decode(gen_outputs, skip_special_tokens=True)
@@ -569,8 +627,10 @@ def test(config):
     saved_file_path = os.path.join(config["output_dir"], saved_file)
     fout = open(saved_file_path, "w")
     for i in range(len(generated_text)):
+        fout.write("Teacher text: " + teacher_text[i].strip() + "\n")
         fout.write("Generated text: " + generated_text[i].strip() + "\n")
         fout.write("Reference text: " + reference_text[i].strip() + "\n")
+        fout.write("\n")
     fout.close()
 
 

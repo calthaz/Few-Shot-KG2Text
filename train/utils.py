@@ -127,8 +127,9 @@ def read_configuration(config_file):
 
 
 def collate_fn_graph_text(batch):
-    nodes, edges, types, outputs, pointer, pairs, relations, positions, descriptions = [], [], [], [], [], [], [], [], []
+    nodes, edges, types, outputs, pointer, pairs, relations, positions, descriptions, predictions = [], [], [], [], [], [], [], [], [], []
     for b in batch:
+        #print(b)
         nodes.append(b[0])
         edges.append(b[1])
         types.append(b[2])
@@ -139,6 +140,7 @@ def collate_fn_graph_text(batch):
         relations.append(b[6])
         positions.append(b[7])
         descriptions.append(b[8])
+        predictions.append(b[9])
 
     nodes, node_masks = padding(nodes, pad_idx=0)
     outputs, output_masks = padding(outputs, pad_idx=1)  # tokenizer.pad_token_id
@@ -147,9 +149,14 @@ def collate_fn_graph_text(batch):
     relations, _ = padding(relations, pad_idx=0)
     positions, _ = padding(positions, pad_idx=0)
     descriptions, description_masks = padding(descriptions, pad_idx=1)  # tokenizer.pad_token_id
+    #print("utils predictions_before", predictions)
 
+    predictions, prediction_masks = padding(predictions, pad_idx=-99)
+
+    #print("utils predictions", predictions)
+    #print("utils positions", positions)
     return nodes, edges, types, node_masks, descriptions, description_masks, positions, relations, pairs, pair_masks, \
-           outputs, output_masks, pointer, pointer_masks
+           outputs, output_masks, pointer, pointer_masks, predictions, prediction_masks
 
 
 def padding(inputs, pad_idx):

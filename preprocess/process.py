@@ -4,6 +4,7 @@ import unidecode
 import codecs
 import random
 import spacy
+import networkx as nx
 #from transformers import RobertaTokenizer, BartTokenizer, BertTokenizer
 #from transformers import AutoTokenizer, AutoModelForMaskedLM
 from transformers import BertTokenizer
@@ -78,6 +79,20 @@ def get_text(txt, lower=True):
     return txt
 
 
+def BFS_nx(graph, s):
+    queue = [s]
+    seen = [s]
+    node_seq = []
+    while queue:
+        vertex = queue.pop(0)
+        #adj_nodes = graph[vertex].item()
+        for w in list(graph.neighbors(vertex)):
+            if w not in seen:
+                queue.append(w)
+                seen.append(w)
+        node_seq.append(vertex)
+    return node_seq
+
 def BFS(graph, s):
     queue = [s]
     seen = [s]
@@ -141,41 +156,6 @@ for fn in filename:
            ren_dict[en] = k
         new_dict['ner2ent'] = ner_dict
         new_dict['ent2ner'] = ren_dict
-        # -------WebNLG dataset------
-
-        # -------Agenda dataset------
-        # new_dict['title'] = get_text(d['title'])
-        # types = d['types'].split()
-        # valid = True
-        # ner_dict = {}
-        # ren_dict = {}
-        # for idx in range(len(types)):
-        #     en = get_nodes(d['entities'][idx])
-        #     if en == "":
-        #         valid = False
-        #     ner = types[idx][1:-1].upper()
-        #     ner_dict[ner + "_" + str(idx)] = en
-        #     ren_dict[en] = ner + "_" + str(idx)
-        # new_dict['ner2ent'] = ner_dict
-        # new_dict['ent2ner'] = ren_dict
-
-        # print(new_dict)
-        # exit()
-        # -------WebNLG dataset------
-
-        # -------Genwiki dataset------
-        # valid = True
-        # ner_dict = {}
-        # ren_dict = {}
-        # for idx, ent in enumerate(d['entities']):
-        #     ner = "ENT_" + str(idx)
-        #     en = get_nodes(ent)
-        #     if en == "":
-        #         valid = False
-        #     ner_dict[ner] = en
-        #     ren_dict[en] = ner
-        # new_dict['ner2ent'] = ner_dict
-        # new_dict['ent2ner'] = ren_dict
         # -------WebNLG dataset------
 
         if not valid:
@@ -275,24 +255,12 @@ for fn in filename:
 
         new_dict['pointer'] = pointer
 
-        adject = dict()
+        # adject = dict() ??
         for t in new_dict['triples']:
             if t[0] not in nodes:
                 nodes.append(t[0])
             if t[2] not in nodes:
                 nodes.append(t[2])
-
-            if t[0] not in adject:
-                adject[t[0]] = []
-            adject[t[0]].append(t[2])
-            if t[2] not in adject:
-                adject[t[2]] = []
-            adject[t[2]].append(t[0])
-
-        # for en in d['entities']:
-        #     case_en = get_nodes(en)
-        #     if case_en not in nodes:
-        #         nodes.append(case_en)
 
         new_dict['nodes'] = nodes
 
@@ -310,7 +278,24 @@ for fn in filename:
         new_dict['edges'] = edges
         new_dict['types'] = types
 
-        #
+        # ------------ bfs ----------------------
+        G = nx.DiGraph()
+        for t in new_dict['triples']:
+            G.add_node(t[0])
+            G.add_node(t[2])
+            G.add_edge(t[0], t[2], attr={'edge_type': t[1]})
+        node_list = []
+        for x in range(len(new_dict['triples'])):
+            if (new_dict['triples'][x][0] not in node_list):
+                source = new_dict['triples'][x][0] 
+                nodes_from_source = list(nx.dfs_tree(G, source=new_dict['triples'][x][0]).nodes())
+                for ns in nodes_from_source:
+                    if(ns not in node_list):
+                        node_list.append(ns)
+        assert len(node_list) == len(nodes), \
+            "traversal gives non-equal nodes sorted: {}, original: {}".format(
+                json.dumps(node_list,  ensure_ascii=False), json.dumps(nodes,  ensure_ascii=False))
+        new_dict['sorted_node_list'] = node_list
         # bfs_edges = [[], []]
         # bfs_types = []
         # for t in new_dict['triples']:
@@ -358,7 +343,7 @@ for fn in filename:
         # new_dict['shuffle_edges'] = shuffle_edges
         # new_dict['shuffle_types'] = shuffle_types
 
-        word_nodes = [bert_tokenizer.tokenize(node) for node in new_dict['nodes']]
+        word_nodes = [bert_tokenizer.tokenize(node) for node in new_dict['sorted_node_list'] ] #new_dict['nodes']
         new_dict['split_nodes'] = [nd for nodes in word_nodes for nd in nodes]
 
         start = 0
@@ -421,33 +406,101 @@ for fn in filename:
                 new_target_tokens.append(new_dict['target'][text_pointer])
                 text_pointer += 1
         #-------------------------------
-        target_tokens = ["<s>"] + bert_tokenizer.tokenize(''.join(new_target_tokens)) + ["</s>"]
-        #print("target_tokens", target_tokens)
 
-        positions = [[0] * len(bert_tokenizer.tokenize(ent)) for ent in new_dict['nodes']]
+        teacher_cloze_tokens = []
+        last_is_extra = False
+        extra_count = 0
+        labels = []
+        order = 1
+        masked_teacher_tokens = []
+        for idx, token in enumerate(new_target_tokens):
+            if token == '[MASK]':
+                ent = order2ent[order]
+                teacher_cloze_tokens.extend(bert_tokenizer.tokenize(ent))
+                masked_teacher_tokens.append('[MASK]')
+                last_is_extra = False
+                order += 1
+            else:
+                if not last_is_extra:
+                    extra_token = 'extra'+str(extra_count)
+                    extra_count += 1
+                    teacher_cloze_tokens.append(extra_token)
+                    masked_teacher_tokens.append(extra_token)
+                    last_is_extra = True
+                    labels.append(extra_token)
+                labels.append(token)
+                
+                
+        labels = bert_tokenizer.tokenize(''.join(labels))
+        new_dict['teacher_cloze_tokens'] = teacher_cloze_tokens
+        new_dict['labels'] = labels
+
+        #print(labels)
+        #print(teacher_cloze_tokens)
+        #exit()
+
+
+        target_tokens = ["<s>"] + bert_tokenizer.tokenize(''.join(masked_teacher_tokens)) + ["</s>"]#
+
+        positions = [[0] * len(bert_tokenizer.tokenize(ent)) for ent in new_dict['sorted_node_list']]#nodes
         masked_target_tokens = []
         new_target_tokens = []
         order = 1
+        # target token = ['<s>', '[MASK]', '的', '[MASK]', '其', '[MASK]', '[MASK]', '，', '[MASK]', '也', '[MASK]', '，', '[MASK]', '。', '</s>']
+        #"这 些 变 化 <extra0> 消 费 者 心 理 <extra1>消费者心理<extra2>新变化<extra3>新特点"
+        #cloze "粗粒及不等粒结构extra0石材extra2外观效果较差extra3力学性能extra4不均匀extra5质量稍差extra6"
+        #labels extra0的extra2其extra3，extra4也extra5，extra6。
+        last_is_extra = False
         for idx, token in enumerate(target_tokens):
             if token == '[MASK]':
                 ent = order2ent[order]
                 ent_len = len(bert_tokenizer.tokenize(ent))
                 start = len(masked_target_tokens)
-                ent_idx = new_dict['nodes'].index(ent)
+                ent_idx = new_dict['sorted_node_list'].index(ent) #new_dict['nodes'].index(ent)
                 positions[ent_idx] = list(range(start, start + ent_len))
                 masked_target_tokens.extend(['[MASK]'] * ent_len)
-                new_target_tokens.extend(bert_tokenizer.tokenize(ent))
+                #new_target_tokens.extend(bert_tokenizer.tokenize(ent))
+                last_is_extra = False
                 order += 1
             else:
-                masked_target_tokens.append(token)
-                new_target_tokens.append(token)
-        positions = [p for pos in positions for p in pos]
+                #new_target_tokens.append(token)
+                if not last_is_extra:
+                    masked_target_tokens.append('extra_mask')   
+                    last_is_extra = True
 
+        positions = [p for pos in positions for p in pos]
         new_dict['positions'] = positions
-        new_dict['description'] = new_target_tokens
-        new_dict['masked_description'] = masked_target_tokens
+
+        #print('teacher_cloze', new_dict['teacher_cloze_tokens'])
+        #print('masked_target_tokens', masked_target_tokens)
+        #print('positions', new_dict['positions'] )
+        #print('split_nodes', new_dict['split_nodes'])
+        
+        #new_dict['description'] = new_target_tokens
+        #new_dict['masked_description'] = masked_target_tokens
 
         assert len(new_dict['split_nodes']) == len(new_dict['positions'])
+
+        
+        all_node_ranges = []
+        for pair in pairs:
+            all_node_ranges.append(pair[0])
+            all_node_ranges.append(pair[1])
+        all_node_ranges = list(all_node_ranges)
+        all_node_ranges.sort()
+        #print(all_node_ranges)
+        res = []
+        for i in all_node_ranges:
+            if i not in res:
+                res.append(i)
+        #print(res)
+        prediction_tokens = []
+        for idx, r in enumerate(res):
+            prediction_tokens.extend(range(r[0], r[1]+1))
+            prediction_tokens.append(-idx)
+
+        new_dict['prediction_tokens'] = prediction_tokens
+        # print(json.dumps(new_dict, ensure_ascii=False)
 
         #print(len(new_dict['split_nodes']))
         fout.write(json.dumps(new_dict, ensure_ascii=False) + "\n")

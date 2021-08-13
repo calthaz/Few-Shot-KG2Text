@@ -73,14 +73,14 @@ class S2SDataset(Dataset):
         self.usage = usage
         self.mode = mode
         self.input_nodes, self.input_edges, self.input_types, self.output_ids, self.pointer, \
-            self.pairs, self.relations, self.positions, self.descriptions = self.prepare_data()
+            self.pairs, self.relations, self.positions, self.descriptions, self.predictions = self.prepare_data()
 
     def __len__(self):
         return len(self.input_nodes)
 
     def __getitem__(self, idx):
         return self.input_nodes[idx], self.input_edges[idx], self.input_types[idx], self.output_ids[idx], \
-                    self.pointer[idx], self.pairs[idx], self.relations[idx], self.positions[idx], self.descriptions[idx]
+                    self.pointer[idx], self.pairs[idx], self.relations[idx], self.positions[idx], self.descriptions[idx], self.predictions[idx]
 
     def prepare_data(self):
         """
@@ -97,9 +97,9 @@ class S2SDataset(Dataset):
             else:
                 data = torch.load(os.path.join(self.data_dir, self.dataset, '{}_{}.tar'.format(self.usage, self.num_samples)))
             
-            input_nodes, input_edges, input_types, output_ids, pointer, input_pairs, relations, positions, descriptions = \
+            input_nodes, input_edges, input_types, output_ids, pointer, input_pairs, relations, positions, descriptions, predictions = \
                 data["nodes"], data["edges"], data["types"], data["outputs"], data["pointer"], data["pairs"], \
-                data["relations"], data["positions"], data["descriptions"]
+                data["relations"], data["positions"], data["descriptions"], data['predictions']
         except FileNotFoundError:
             all_data = []
             if(self.mode=="train_vertex"):
@@ -118,7 +118,7 @@ class S2SDataset(Dataset):
                     sentence = data["target_txt"]
                     if sentence.strip() == "":
                         continue
-                    desc = data["description"]
+                    desc = data['teacher_cloze_tokens'] #data["description"]
                     if len(desc) > 512:
                         continue
                     all_data.append(data)
@@ -127,23 +127,27 @@ class S2SDataset(Dataset):
                 all_data = random.sample(all_data, int(self.num_samples))
 
             input_nodes, input_edges, input_types, output_ids, pointer, \
-                input_pairs, relations, positions, descriptions = [], [], [], [], [], [], [], [], []
+                input_pairs, relations, positions, descriptions, predictions = [], [], [], [], [], [], [], [], [], []
             for data in all_data:
                 nodes = self.node_vocab.convert_tokens_to_ids(data["split_nodes"])
                 edges = data["split_edges"]
                 types = self.relation_vocab.convert_tokens_to_ids(data["split_types"])
 
                 #outputs = self.tokenizer.convert_tokens_to_ids(["<s>"] + data["plm_output"] + ["</s>"])
-                outputs = self.tokenizer.convert_tokens_to_ids(["<s>"] + data["plm_output"] + ["</s>"])
-                copy_pointer = [0] + data["pointer"] + [0]
+                outputs = self.tokenizer.convert_tokens_to_ids(["[CLS]"] + data['labels'] )#data["plm_output"]
+                copy_pointer = [0]*len(outputs) #+data["pointer"]
                 assert len(outputs) == len(copy_pointer), "The length of outputs and pointer should be matched."
 
                 pairs = data["pairs"]
                 rela = self.relation_vocab.convert_tokens_to_ids(data["relations"])
 
                 pos = data["positions"]
-                desc = self.tokenizer.convert_tokens_to_ids(data["description"])
+                desc = self.tokenizer.convert_tokens_to_ids(["<s>"] + data['teacher_cloze_tokens']) #data["description"])
+                assert np.max(pos) < len(desc), "position out of bounds pos: {} teacher_tokens: {}".format(" ".join([str(p) for p in pos]), " ".join(desc))
                 assert len(types) == len(edges[0]), "The length of edges and types should be matched."
+
+                prediction_tokens = data['prediction_tokens']
+                
                 input_nodes.append(nodes)
                 input_edges.append(edges)
                 input_types.append(types)
@@ -153,10 +157,12 @@ class S2SDataset(Dataset):
                 relations.append(rela)
                 positions.append(pos)
                 descriptions.append(desc)
+                predictions.append(prediction_tokens)
+
             data = {"nodes": input_nodes, "edges": input_edges, "types": input_types, "outputs": output_ids,
                     "pointer": pointer, "pairs": input_pairs, "relations": relations, "positions": positions,
-                    "descriptions": descriptions}
+                    "descriptions": descriptions, 'predictions': predictions}
 
             torch.save(data, os.path.join(self.data_dir, self.dataset, '{}_{}.tar'.format(self.usage, self.num_samples)))
 
-        return input_nodes, input_edges, input_types, output_ids, pointer, input_pairs, relations, positions, descriptions
+        return input_nodes, input_edges, input_types, output_ids, pointer, input_pairs, relations, positions, descriptions, predictions
