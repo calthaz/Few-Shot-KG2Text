@@ -67,7 +67,7 @@ outputs = model(input_ids=input_ids, labels=labels)
 loss = outputs.loss
 logits = outputs.logits
 
-print("loss", loss)
+print("loss", loss) #9.4
 
 #input_ids = tokenizer("总结：研究表明养狗对人", return_tensors="pt").input_ids  # Batch size 1
 outputs = model.generate(input_ids) 

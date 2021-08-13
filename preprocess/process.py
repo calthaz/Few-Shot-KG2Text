@@ -8,7 +8,7 @@ import networkx as nx
 #from transformers import RobertaTokenizer, BartTokenizer, BertTokenizer
 #from transformers import AutoTokenizer, AutoModelForMaskedLM
 from transformers import BertTokenizer
-bert_tokenizer = BertTokenizer.from_pretrained("uer/t5-small-chinese-cluecorpussmall")
+bert_tokenizer = BertTokenizer.from_pretrained("uer/bart-base-chinese-cluecorpussmall")
 bert_tokenizer.bos_token="<s>"
 bert_tokenizer.eos_token="</s>"
 bert_tokenizer.mask_token="[MASK]"
@@ -407,7 +407,10 @@ for fn in filename:
                 text_pointer += 1
         #-------------------------------
 
+        #print("new_target_tokens", new_target_tokens)
+        
         teacher_cloze_tokens = []
+        bart_cloze_tokens = []
         last_is_extra = False
         extra_count = 0
         labels = []
@@ -417,6 +420,7 @@ for fn in filename:
             if token == '[MASK]':
                 ent = order2ent[order]
                 teacher_cloze_tokens.extend(bert_tokenizer.tokenize(ent))
+                bart_cloze_tokens.extend(bert_tokenizer.tokenize(ent))
                 masked_teacher_tokens.append('[MASK]')
                 last_is_extra = False
                 order += 1
@@ -425,6 +429,7 @@ for fn in filename:
                     extra_token = 'extra'+str(extra_count)
                     extra_count += 1
                     teacher_cloze_tokens.append(extra_token)
+                    bart_cloze_tokens.append("[MASK]")
                     masked_teacher_tokens.append(extra_token)
                     last_is_extra = True
                     labels.append(extra_token)
@@ -433,51 +438,68 @@ for fn in filename:
                 
         labels = bert_tokenizer.tokenize(''.join(labels))
         new_dict['teacher_cloze_tokens'] = teacher_cloze_tokens
+        new_dict['bart_cloze_tokens'] = bart_cloze_tokens
         new_dict['labels'] = labels
 
         #print(labels)
         #print(teacher_cloze_tokens)
         #exit()
 
+        #print("new_target_tokens", new_target_tokens)
+        #exit()
 
-        target_tokens = ["<s>"] + bert_tokenizer.tokenize(''.join(masked_teacher_tokens)) + ["</s>"]#
+        target_tokens = ["<s>"] + bert_tokenizer.tokenize(''.join(new_target_tokens)) + ["</s>"]#
 
         positions = [[0] * len(bert_tokenizer.tokenize(ent)) for ent in new_dict['sorted_node_list']]#nodes
         masked_target_tokens = []
         new_target_tokens = []
+        position_placeholders = []
         order = 1
         # target token = ['<s>', '[MASK]', '的', '[MASK]', '其', '[MASK]', '[MASK]', '，', '[MASK]', '也', '[MASK]', '，', '[MASK]', '。', '</s>']
         #"这 些 变 化 <extra0> 消 费 者 心 理 <extra1>消费者心理<extra2>新变化<extra3>新特点"
         #cloze "粗粒及不等粒结构extra0石材extra2外观效果较差extra3力学性能extra4不均匀extra5质量稍差extra6"
         #labels extra0的extra2其extra3，extra4也extra5，extra6。
         last_is_extra = False
+        extra_count = 0
         for idx, token in enumerate(target_tokens):
             if token == '[MASK]':
                 ent = order2ent[order]
                 ent_len = len(bert_tokenizer.tokenize(ent))
-                start = len(masked_target_tokens)
+                start = len(position_placeholders)
                 ent_idx = new_dict['sorted_node_list'].index(ent) #new_dict['nodes'].index(ent)
                 positions[ent_idx] = list(range(start, start + ent_len))
-                masked_target_tokens.extend(['[MASK]'] * ent_len)
-                #new_target_tokens.extend(bert_tokenizer.tokenize(ent))
+                masked_target_tokens.extend(['[MASK]']* ent_len) #
+                position_placeholders.extend(['[MASK]']* ent_len)
+                new_target_tokens.extend(bert_tokenizer.tokenize(ent))
                 last_is_extra = False
                 order += 1
             else:
-                #new_target_tokens.append(token)
+                new_target_tokens.append(token)
+                masked_target_tokens.append(token)
                 if not last_is_extra:
-                    masked_target_tokens.append('extra_mask')   
+                    extra_token = 'other_text'+str(extra_count)
+                    extra_count += 1
                     last_is_extra = True
+                    position_placeholders.append(extra_token)
 
         positions = [p for pos in positions for p in pos]
         new_dict['positions'] = positions
+
+        #print('bart_cloze_tokens', bart_cloze_tokens)
+        #print("position_placeholders", position_placeholders)
+        #print('positions', positions)
+        #exit()
 
         #print('teacher_cloze', new_dict['teacher_cloze_tokens'])
         #print('masked_target_tokens', masked_target_tokens)
         #print('positions', new_dict['positions'] )
         #print('split_nodes', new_dict['split_nodes'])
         
-        #new_dict['description'] = new_target_tokens
-        #new_dict['masked_description'] = masked_target_tokens
+        new_dict['description'] = new_target_tokens
+        #print(new_dict['description'])
+        new_dict['masked_description'] = masked_target_tokens
+        #print(new_dict['masked_description'])
+        #exit()
 
         assert len(new_dict['split_nodes']) == len(new_dict['positions'])
 

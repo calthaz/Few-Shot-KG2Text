@@ -3,11 +3,11 @@ import pickle
 import numpy as np
 #from transformers import AutoTokenizer, AutoModelForMaskedLM
 
-from transformers import BertTokenizer, T5ForConditionalGeneration
-tokenizer = BertTokenizer.from_pretrained("uer/t5-small-chinese-cluecorpussmall")
+from transformers import BertTokenizer, BartForConditionalGeneration
+tokenizer = BertTokenizer.from_pretrained("uer/bart-base-chinese-cluecorpussmall")
 
 #model = AutoModelForMaskedLM.from_pretrained('bert-base-chinese')
-model = T5ForConditionalGeneration.from_pretrained("uer/t5-small-chinese-cluecorpussmall")
+model = BartForConditionalGeneration.from_pretrained("uer/bart-base-chinese-cluecorpussmall")
 #tokenizer = AutoTokenizer.from_pretrained('bert-base-chinese')#../../pretrained_model/bart-large
 embedding = model.get_input_embeddings().weight
 

@@ -118,7 +118,7 @@ class S2SDataset(Dataset):
                     sentence = data["target_txt"]
                     if sentence.strip() == "":
                         continue
-                    desc = data['teacher_cloze_tokens'] #data["description"]
+                    desc = data['bart_cloze_tokens'] #data["description"]
                     if len(desc) > 512:
                         continue
                     all_data.append(data)
@@ -134,7 +134,7 @@ class S2SDataset(Dataset):
                 types = self.relation_vocab.convert_tokens_to_ids(data["split_types"])
 
                 #outputs = self.tokenizer.convert_tokens_to_ids(["<s>"] + data["plm_output"] + ["</s>"])
-                outputs = self.tokenizer.convert_tokens_to_ids(["[CLS]"] + data['labels'] )#data["plm_output"]
+                outputs = self.tokenizer.convert_tokens_to_ids(["[CLS]"] + data['plm_output'] )#data["plm_output"]
                 copy_pointer = [0]*len(outputs) #+data["pointer"]
                 assert len(outputs) == len(copy_pointer), "The length of outputs and pointer should be matched."
 
@@ -142,12 +142,14 @@ class S2SDataset(Dataset):
                 rela = self.relation_vocab.convert_tokens_to_ids(data["relations"])
 
                 pos = data["positions"]
-                desc = self.tokenizer.convert_tokens_to_ids(["<s>"] + data['teacher_cloze_tokens']) #data["description"])
+                assert len(nodes) == len(pos), "nodes should propably match the positions."
+                
+                desc = self.tokenizer.convert_tokens_to_ids(["<s>"] + data['bart_cloze_tokens']) #data["description"])
                 assert np.max(pos) < len(desc), "position out of bounds pos: {} teacher_tokens: {}".format(" ".join([str(p) for p in pos]), " ".join(desc))
                 assert len(types) == len(edges[0]), "The length of edges and types should be matched."
 
                 prediction_tokens = data['prediction_tokens']
-                
+
                 input_nodes.append(nodes)
                 input_edges.append(edges)
                 input_types.append(types)
